@@ -43,6 +43,8 @@ from tasks.trial_expiry import check_expired_trials
 from tasks.weekly_report import send_weekly_reports
 from services.checker import create_shared_session
 from web.server import start_web_server, stop_web_server
+from handlers.referral import referral, referral_refresh_callback
+from handlers.admin import admin_panel, admin_conversation
 
 logging.basicConfig(level=logging.INFO)
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -62,8 +64,8 @@ async def post_shutdown(app):
         await session.close()
 
 
-async def _restore_monitors(context):
-    restore_all_monitors(context.application)
+#async def _restore_monitors(context):
+#    restore_all_monitors(context.application)
 
 
 def main():
@@ -77,7 +79,7 @@ def main():
         .build()
     )
 
-    app.job_queue.run_once(_restore_monitors, when=3)
+    #app.job_queue.run_once(_restore_monitors, when=3)
 
     app.job_queue.run_daily(
         check_expired_trials,
@@ -110,6 +112,7 @@ def main():
     app.add_handler(team_conversation)
     app.add_handler(add_conversation)
     app.add_handler(statuspage_conversation)
+    app.add_handler(admin_conversation)
 
     # Commands
     app.add_handler(CommandHandler("start",       start))
@@ -123,12 +126,16 @@ def main():
     app.add_handler(CommandHandler("team",        team_conversation.entry_points[0].callback))
     app.add_handler(CommandHandler("maintenance", maintenance_conversation.entry_points[0].callback))
     app.add_handler(CommandHandler("statuspage",  statuspage_conversation.entry_points[0].callback))
+    app.add_handler(CommandHandler("referral", referral))
+    app.add_handler(CommandHandler("admin", admin_panel))
 
     # Delete — long prefixes before short ones
     app.add_handler(CallbackQueryHandler(confirm_delete_callback, pattern="^confirmdelete_"))
     app.add_handler(CallbackQueryHandler(cancel_delete_callback,  pattern="^canceldelete_"))
     app.add_handler(CallbackQueryHandler(delete_callback,         pattern="^del_"))
-
+    app.add_handler(CallbackQueryHandler(
+        referral_refresh_callback, pattern="^referral_refresh$"
+    ))
     # Monitor actions
     app.add_handler(CallbackQueryHandler(pause_callback,   pattern="^pause_"))
     app.add_handler(CallbackQueryHandler(resume_callback,  pattern="^resume_"))

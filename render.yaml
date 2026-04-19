@@ -1,0 +1,24 @@
+services:
+  - type: web                          # ← was: worker
+    name: uptimeguard-bot
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: DB_PATH
+        value: /data/uptime.db
+      - key: STATUS_PAGE_BASE_URL
+        sync: false                    # set manually in Render dashboard
+      - key: STATUS_PAGE_PORT
+        value: "8080"
+      - key: ADMIN_IDS
+        sync: false
+      - key: BOT_USERNAME
+        sync: false
+
+disks:
+  - name: uptime-data
+    mountPath: /data
+    sizeGB: 1
