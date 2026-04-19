@@ -1,14 +1,24 @@
-##handlers/payments.py
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice
 from telegram.ext import ContextTypes
 from db.database import upgrade_user
 from config import PRO_MONTHLY_PRICE
 
+
 async def upgrade(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Works from both /upgrade command and callback query
+    if update.callback_query:
+        user_id  = update.callback_query.from_user.id
+        reply_fn = update.callback_query.message.reply_text
+        await update.callback_query.answer()
+    else:
+        user_id  = update.effective_user.id
+        reply_fn = update.message.reply_text
+
     keyboard = InlineKeyboardMarkup([[
         InlineKeyboardButton("⭐ Pay with Telegram Stars", callback_data="pay_pro")
     ]])
-    await update.message.reply_text(
+
+    await reply_fn(
         "⭐ <b>Upgrade to Pro</b>\n\n"
         "✅ Unlimited monitors\n"
         "✅ 1-minute check interval\n"
@@ -19,6 +29,7 @@ async def upgrade(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="HTML",
         reply_markup=keyboard
     )
+
 
 async def pay_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -32,14 +43,15 @@ async def pay_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         prices=[LabeledPrice("Pro Monthly", PRO_MONTHLY_PRICE)]
     )
 
+
 async def precheckout(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.pre_checkout_query.answer(ok=True)
+
 
 async def payment_success(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     upgrade_user(user_id, "pro")
 
-    # Re-schedule all monitors at 1-min interval
     from db.database import get_monitors
     from services.scheduler import schedule_monitor
     monitors = get_monitors(user_id)
