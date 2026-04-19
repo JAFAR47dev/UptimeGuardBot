@@ -7,7 +7,9 @@ bot_username      = os.getenv("bot_username")
 BOT_TOKEN         = os.getenv("BOT_TOKEN")
 DB_PATH           = os.getenv("DB_PATH", "uptime.db")
 FREE_LIMIT        = 3
-PRO_MONTHLY_PRICE = 500   # Telegram Stars
+PRO_MONTHLY_PRICE = 500    # ~$5
+PRO_3MONTH_PRICE  = 1250   # ~$12.50 — saves 250 Stars
+PRO_YEARLY_PRICE  = 4000   # ~$40    — saves 2,000 Stars
 
 # Admin IDs — comma-separated in .env: ADMIN_IDS=123456789,987654321
 _raw_admin_ids = os.getenv("ADMIN_IDS", "")

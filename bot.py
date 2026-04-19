@@ -37,7 +37,15 @@ from handlers.team import (
     team_cancel_remove_callback,
 )
 from handlers.reports import report
-from handlers.payments import upgrade, pay_callback, precheckout, payment_success
+from handlers.payments import (
+    upgrade,
+    pay_callback,           # legacy — keep for old buttons
+    pay_monthly_callback,   # new
+    pay_3month_callback,    # new
+    pay_yearly_callback,    # new
+    precheckout,
+    payment_success
+)
 from handlers.statuspage import statuspage_conversation
 from tasks.trial_expiry import check_expired_trials
 from tasks.weekly_report import send_weekly_reports
@@ -173,6 +181,9 @@ def main():
     # Payments
     app.add_handler(CallbackQueryHandler(pay_callback, pattern="^pay_pro$"))
     app.add_handler(CallbackQueryHandler(upgrade,      pattern="^upgrade$"))
+    app.add_handler(CallbackQueryHandler(pay_monthly_callback, pattern="^pay_monthly$"))
+    app.add_handler(CallbackQueryHandler(pay_3month_callback,  pattern="^pay_3month$"))
+    app.add_handler(CallbackQueryHandler(pay_yearly_callback,  pattern="^pay_yearly$"))
     app.add_handler(PreCheckoutQueryHandler(precheckout))
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, payment_success))
 
