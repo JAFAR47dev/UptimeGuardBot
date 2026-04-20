@@ -256,24 +256,13 @@ async def cancel_settings(
 # ─────────────────────────────────────────
 
 def _lookup_timezone(city: str) -> dict | None:
-    """
-    Synchronous function — must be called via run_in_executor.
-
-    1. geopy Nominatim geocodes the city name to lat/lng
-    2. timezonefinder converts lat/lng to an IANA timezone string
-    3. Returns a dict with timezone, display city, country, UTC offset
-
-    Returns None if the city cannot be found or geocoding fails.
-    """
     try:
         from geopy.geocoders import Nominatim
-        from timezonefinder import TimezoneFinder
+        import requests
         import pytz
         import time
 
         geolocator = Nominatim(user_agent="UptimeGuardBot/1.0")
-
-        # Respect Nominatim's 1 req/sec policy
         time.sleep(1.1)
 
         location = geolocator.geocode(
@@ -282,15 +271,21 @@ def _lookup_timezone(city: str) -> dict | None:
             addressdetails=True,
             timeout=10
         )
-
         if not location:
             return None
 
         lat = location.latitude
         lng = location.longitude
 
-        tf = TimezoneFinder()
-        tz_name = tf.timezone_at(lat=lat, lng=lng)
+        # Pure HTTP call — no compiled dependencies
+        resp = requests.get(
+            "https://timeapi.io/api/timezone/coordinate",
+            params={"latitude": lat, "longitude": lng},
+            timeout=10
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        tz_name = data.get("timeZone")
 
         if not tz_name:
             return None
@@ -301,10 +296,9 @@ def _lookup_timezone(city: str) -> dict | None:
         sign      = offset[0]
         hours     = int(offset[1:3])
         minutes   = int(offset[3:5])
-        if minutes:
-            utc_offset = f"UTC{sign}{hours}:{minutes:02d}"
-        else:
-            utc_offset = f"UTC{sign}{hours}"
+        utc_offset = (
+            f"UTC{sign}{hours}:{minutes:02d}" if minutes else f"UTC{sign}{hours}"
+        )
 
         raw_address = location.raw.get("address", {})
         city_found  = (
@@ -328,7 +322,6 @@ def _lookup_timezone(city: str) -> dict | None:
     except Exception as e:
         logger.error(f"_lookup_timezone error for '{city}': {e}", exc_info=True)
         return None
-
 
 # ─────────────────────────────────────────
 # Conversation handler
