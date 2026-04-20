@@ -3,3 +3,6 @@ python-telegram-bot[job-queue]>=20.8
 aiohttp==3.9.3
 python-dotenv==1.0.1
 APScheduler==3.10.4
+geopy==2.4.1
+timezonefinder==6.5.0
+pytz==2024.1

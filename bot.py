@@ -11,6 +11,7 @@ from db.database import init_db
 from services.scheduler import restore_all_monitors
 from handlers.start import (
     start,
+    skip_tz_callback,    
     how_it_works_callback,
     quick_status_callback,
     quick_list_callback,
@@ -39,10 +40,10 @@ from handlers.team import (
 from handlers.reports import report
 from handlers.payments import (
     upgrade,
-    pay_callback,           # legacy — keep for old buttons
-    pay_monthly_callback,   # new
-    pay_3month_callback,    # new
-    pay_yearly_callback,    # new
+    pay_callback,
+    pay_monthly_callback,
+    pay_3month_callback,
+    pay_yearly_callback,
     precheckout,
     payment_success
 )
@@ -53,6 +54,13 @@ from services.checker import create_shared_session
 from web.server import start_web_server, stop_web_server
 from handlers.referral import referral, referral_refresh_callback
 from handlers.admin import admin_panel, admin_conversation
+from handlers.myplan import myplan
+from handlers.settings import (
+    settings_command,
+    settings_conversation,
+    settings_myplan_callback,   # ← new
+)
+
 
 logging.basicConfig(level=logging.INFO)
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -72,10 +80,6 @@ async def post_shutdown(app):
         await session.close()
 
 
-#async def _restore_monitors(context):
-#    restore_all_monitors(context.application)
-
-
 def main():
     init_db()
 
@@ -86,8 +90,6 @@ def main():
         .post_stop(post_shutdown)
         .build()
     )
-
-    #app.job_queue.run_once(_restore_monitors, when=3)
 
     app.job_queue.run_daily(
         check_expired_trials,
@@ -106,8 +108,6 @@ def main():
     # Handlers
     # ConversationHandlers first — entry_point patterns must not overlap with
     # global callbacks registered below.
-    # confirm_conversation uses pattern "^confirm_\d+$" to avoid matching
-    # "confirmdelete_" and "confirmset_" which are handled separately.
     # -----------------------------------------------------------------------
 
     # Conversations
@@ -115,14 +115,15 @@ def main():
     app.add_handler(threshold_conversation)
     app.add_handler(note_conversation)
     app.add_handler(webhook_conversation)
-    app.add_handler(keyword_conversation)        # ← new
-    app.add_handler(confirm_conversation)        # ← new (pattern: ^confirm_\d+$)
+    app.add_handler(keyword_conversation)
+    app.add_handler(confirm_conversation)
     app.add_handler(team_conversation)
     app.add_handler(add_conversation)
     app.add_handler(statuspage_conversation)
     app.add_handler(admin_conversation)
+    app.add_handler(settings_conversation)
 
-    # Commands
+    # Commands  (myplan removed — accessed via /settings instead)
     app.add_handler(CommandHandler("start",       start))
     app.add_handler(CommandHandler("list",        list_monitors))
     app.add_handler(CommandHandler("report",      report))
@@ -134,8 +135,9 @@ def main():
     app.add_handler(CommandHandler("team",        team_conversation.entry_points[0].callback))
     app.add_handler(CommandHandler("maintenance", maintenance_conversation.entry_points[0].callback))
     app.add_handler(CommandHandler("statuspage",  statuspage_conversation.entry_points[0].callback))
-    app.add_handler(CommandHandler("referral", referral))
-    app.add_handler(CommandHandler("admin", admin_panel))
+    app.add_handler(CommandHandler("referral",    referral))
+    app.add_handler(CommandHandler("admin",       admin_panel))
+    app.add_handler(CommandHandler("settings",    settings_command))
 
     # Delete — long prefixes before short ones
     app.add_handler(CallbackQueryHandler(confirm_delete_callback, pattern="^confirmdelete_"))
@@ -144,6 +146,14 @@ def main():
     app.add_handler(CallbackQueryHandler(
         referral_refresh_callback, pattern="^referral_refresh$"
     ))
+
+    # Settings & plan
+    app.add_handler(CallbackQueryHandler(settings_command,          pattern="^settings$"))
+    app.add_handler(CallbackQueryHandler(settings_myplan_callback,  pattern="^settings_myplan$"))
+    app.add_handler(CallbackQueryHandler(myplan,                    pattern="^myplan$"))
+
+    app.add_handler(CallbackQueryHandler(skip_tz_callback, pattern="^skip_tz$"))
+
     # Monitor actions
     app.add_handler(CallbackQueryHandler(pause_callback,   pattern="^pause_"))
     app.add_handler(CallbackQueryHandler(resume_callback,  pattern="^resume_"))
@@ -179,11 +189,11 @@ def main():
     ))
 
     # Payments
-    app.add_handler(CallbackQueryHandler(pay_callback, pattern="^pay_pro$"))
-    app.add_handler(CallbackQueryHandler(upgrade,      pattern="^upgrade$"))
-    app.add_handler(CallbackQueryHandler(pay_monthly_callback, pattern="^pay_monthly$"))
-    app.add_handler(CallbackQueryHandler(pay_3month_callback,  pattern="^pay_3month$"))
-    app.add_handler(CallbackQueryHandler(pay_yearly_callback,  pattern="^pay_yearly$"))
+    app.add_handler(CallbackQueryHandler(pay_callback,          pattern="^pay_pro$"))
+    app.add_handler(CallbackQueryHandler(upgrade,               pattern="^upgrade$"))
+    app.add_handler(CallbackQueryHandler(pay_monthly_callback,  pattern="^pay_monthly$"))
+    app.add_handler(CallbackQueryHandler(pay_3month_callback,   pattern="^pay_3month$"))
+    app.add_handler(CallbackQueryHandler(pay_yearly_callback,   pattern="^pay_yearly$"))
     app.add_handler(PreCheckoutQueryHandler(precheckout))
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, payment_success))
 

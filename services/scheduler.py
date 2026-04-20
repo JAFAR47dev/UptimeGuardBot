@@ -1,6 +1,7 @@
 # services/scheduler.py
 import logging
 from urllib.parse import urlparse
+import pytz
 
 from db.database import (
     log_incident, update_monitor_status,
@@ -159,16 +160,34 @@ def schedule_monitor(app, monitor_id: int, interval_minutes: int):
         data={"monitor_id": monitor_id},
     )
 
-
 def schedule_ssl_check(app, monitor_id: int):
+    """Schedule daily SSL check at 9AM in the monitor owner's local timezone."""
+    from db.database import get_monitor, get_user_timezone
+    import datetime
+    import pytz
+
     job_name     = f"ssl_{monitor_id}"
     current_jobs = app.job_queue.get_jobs_by_name(job_name)
     for job in current_jobs:
         job.schedule_removal()
 
+    # Determine owner's timezone
+    monitor  = get_monitor(monitor_id)
+    tz_name  = get_user_timezone(monitor["user_id"]) if monitor else "UTC"
+
+    try:
+        tz        = pytz.timezone(tz_name)
+        # Run at 9AM local time
+        local_9am = datetime.datetime.now(tz).replace(
+            hour=9, minute=0, second=0, microsecond=0
+        )
+        utc_9am   = local_9am.astimezone(pytz.utc).time()
+    except Exception:
+        utc_9am = datetime.time(hour=9, minute=0)
+
     app.job_queue.run_daily(
         run_ssl_check,
-        time=__import__('datetime').time(hour=9, minute=0),
+        time=utc_9am,
         name=job_name,
         data={"monitor_id": monitor_id},
     )

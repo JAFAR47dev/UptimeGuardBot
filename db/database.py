@@ -109,6 +109,7 @@ def init_db():
         "ALTER TABLE monitors ADD COLUMN consecutive_failures INTEGER DEFAULT 0",
         "ALTER TABLE status_pages ADD COLUMN title TEXT",
         "ALTER TABLE users ADD COLUMN bonus_monitors INTEGER DEFAULT 0",
+        "ALTER TABLE users ADD COLUMN timezone TEXT DEFAULT 'UTC'",
         "ALTER TABLE referrals ADD COLUMN rewarded INTEGER DEFAULT 0",
     ]
     for sql in migrations:
@@ -189,6 +190,23 @@ def get_monitor_limit(user_id: int) -> int:
     bonus = (user["bonus_monitors"] or 0) if user else 0
     return FREE_LIMIT + bonus
 
+def set_user_timezone(user_id: int, timezone: str):
+    conn = get_conn()
+    c    = conn.cursor()
+    c.execute(
+        "UPDATE users SET timezone = ? WHERE user_id = ?",
+        (timezone, user_id)
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_user_timezone(user_id: int) -> str:
+    """Returns the user's timezone string, defaulting to UTC."""
+    user = get_user(user_id)
+    if not user:
+        return "UTC"
+    return user.get("timezone") or "UTC"
 
 # ---------------------------------------------------------------------------
 # Monitor helpers

@@ -52,15 +52,20 @@ async def _notify_admins_new_user(bot, user):
         except Exception as e:
             logger.warning(f"Could not notify admin {admin_id}: {e}")
 
+async def skip_tz_callback(update, context):
+    from db.database import set_user_timezone
+    set_user_timezone(update.callback_query.from_user.id, "UTC")
+    await update.callback_query.answer("Using UTC for now.")
+    await update.callback_query.edit_message_reply_markup(reply_markup=None)
 
 # ---------------------------------------------------------------------------
 # /start entry point
 # ---------------------------------------------------------------------------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user               = update.effective_user
-    db_user, is_new    = get_or_create_user(user.id, user.username)
-    pro                = is_pro(user.id)
+    user            = update.effective_user
+    db_user, is_new = get_or_create_user(user.id, user.username)
+    pro             = is_pro(user.id)
 
     # Admin notification for brand-new users
     if is_new:
@@ -81,8 +86,31 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not monitors:
         await _new_user_flow(update, context, db_user, pro, is_new)
-    else:
-        await _returning_user_flow(update, context, db_user, pro, monitors)
+
+        # After the welcome message, prompt new users to set their timezone.
+        # Only shown once — if they already have a timezone set, skip it.
+        from db.database import get_user_timezone
+        current_tz = get_user_timezone(user.id)
+        if not current_tz or current_tz == "UTC":
+            await update.message.reply_text(
+                "🌍 <b>Quick setup — set your timezone</b>\n\n"
+                "This helps reports and alerts arrive at the right local time for you.",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton(
+                        "🌍 Set My Timezone",
+                        callback_data="settings_set_tz"
+                    ),
+                    InlineKeyboardButton(
+                        "⏭ Skip",
+                        callback_data="skip_tz"
+                    )
+                ]])
+            )
+        return
+
+    await _returning_user_flow(update, context, db_user, pro, monitors)
+
 
 
 # ---------------------------------------------------------------------------
