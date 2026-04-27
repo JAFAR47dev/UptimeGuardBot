@@ -3,10 +3,11 @@ import asyncio
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
-from db.database import get_all_monitors
+from db.database import get_all_monitors, get_user_language
+from locales.utility_strings import ut
 
 # ---------------------------------------------------------------------------
-# Cooldown — one test per user per 60 seconds (in-memory, same as snooze)
+# Cooldown — one test per user per 60 seconds (in-memory)
 # ---------------------------------------------------------------------------
 
 TEST_COOLDOWN_SECONDS = 60
@@ -35,12 +36,14 @@ def _stamp_cooldown(bot_data: dict, user_id: int):
 
 
 # ---------------------------------------------------------------------------
-# Alert builders — visually match real alerts, clearly marked as tests
+# Alert builders — kept in English intentionally.
+# These visually mirror real alerts (which are also English for now) and
+# are clearly marked as tests — translating them adds no safety value.
 # ---------------------------------------------------------------------------
 
 def _fake_down_text(monitor: dict) -> str:
-    label = monitor["label"] or monitor["url"]
-    note  = (monitor.get("note") or "").strip()
+    label     = monitor.get("label") or monitor.get("url", "")
+    note      = (monitor.get("note") or "").strip()
     note_line = f"\n📝 <b>Note:</b> <i>{note}</i>" if note else ""
     return (
         f"🧪 <b>TEST ALERT — DOWN: {label}</b>\n\n"
@@ -54,7 +57,7 @@ def _fake_down_text(monitor: dict) -> str:
 
 
 def _fake_up_text(monitor: dict) -> str:
-    label = monitor["label"] or monitor["url"]
+    label = monitor.get("label") or monitor.get("url", "")
     return (
         f"🧪 <b>TEST ALERT — RECOVERED: {label}</b>\n\n"
         f"🌐 {monitor['url']}\n"
@@ -69,14 +72,12 @@ def _fake_up_text(monitor: dict) -> str:
 # ---------------------------------------------------------------------------
 
 async def _fire_test(context, chat_id: int, user_id: int, monitor: dict):
-    """Send fake down alert, wait 5s, send fake recovery alert."""
     _stamp_cooldown(context.bot_data, user_id)
 
     await context.bot.send_message(
         chat_id=chat_id,
         text=_fake_down_text(monitor),
         parse_mode="HTML"
-        # No snooze button — this is not a real incident
     )
 
     await asyncio.sleep(5)
@@ -96,11 +97,12 @@ async def testalert_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id  = update.effective_user.id
     chat_id  = update.effective_chat.id
     bot_data = context.bot_data
+    lang     = get_user_language(user_id)
 
     on_cooldown, remaining = _is_on_cooldown(bot_data, user_id)
     if on_cooldown:
         await update.message.reply_text(
-            f"⏳ Please wait <b>{remaining}s</b> before sending another test alert.",
+            ut(lang, "testalert_cooldown", remaining=remaining),
             parse_mode="HTML"
         )
         return
@@ -109,39 +111,35 @@ async def testalert_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     active   = [m for m in monitors if m["active"] == 1]
 
     if not active:
-        await update.message.reply_text(
-            "⚠️ You have no active monitors to test.\n\n"
-            "Use /add to add your first monitor."
-        )
+        await update.message.reply_text(ut(lang, "testalert_no_monitors"))
         return
 
     if len(active) == 1:
-        # Only one monitor — fire immediately, no selection needed
+        label = active[0].get("label") or active[0].get("url", "")
         await update.message.reply_text(
-            f"🧪 Sending test alert for <b>{active[0]['label'] or active[0]['url']}</b>…",
+            ut(lang, "testalert_sending", label=label),
             parse_mode="HTML"
         )
         await _fire_test(context, chat_id, user_id, dict(active[0]))
         return
 
-    # Multiple monitors — let user pick
+    # Multiple monitors — localised picker
     buttons = [
         [InlineKeyboardButton(
-            m["label"] or m["url"],
+            m.get("label") or m.get("url", ""),
             callback_data=f"testalert_{m['id']}"
         )]
         for m in active
     ]
     await update.message.reply_text(
-        "🧪 <b>Test Alert</b>\n\n"
-        "Which monitor do you want to test?",
+        ut(lang, "testalert_picker"),
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(buttons)
     )
 
 
 # ---------------------------------------------------------------------------
-# Callback — monitor selected from the picker, or button in help/start
+# Callback — monitor selected from picker or triggered from help/start
 # ---------------------------------------------------------------------------
 
 async def testalert_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -149,18 +147,19 @@ async def testalert_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     user_id  = query.from_user.id
     chat_id  = query.message.chat_id
     bot_data = context.bot_data
+    lang     = get_user_language(user_id)
 
     await query.answer()
 
     on_cooldown, remaining = _is_on_cooldown(bot_data, user_id)
     if on_cooldown:
         await query.message.reply_text(
-            f"⏳ Please wait <b>{remaining}s</b> before sending another test alert.",
+            ut(lang, "testalert_cooldown", remaining=remaining),
             parse_mode="HTML"
         )
         return
 
-    data = query.data  # "testalert_<monitor_id>" or "testalert" (no specific monitor)
+    data = query.data   # "testalert_<monitor_id>" or "testalert"
 
     if "_" in data and data != "testalert":
         # Specific monitor chosen from picker
@@ -169,11 +168,12 @@ async def testalert_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         monitor = get_monitor(monitor_id)
 
         if not monitor or monitor["user_id"] != user_id:
-            await query.message.reply_text("⚠️ Monitor not found.")
+            await query.message.reply_text(ut(lang, "testalert_not_found"))
             return
 
+        label = monitor.get("label") or monitor.get("url", "")
         await query.edit_message_text(
-            f"🧪 Sending test alert for <b>{monitor['label'] or monitor['url']}</b>…",
+            ut(lang, "testalert_sending", label=label),
             parse_mode="HTML"
         )
         await _fire_test(context, chat_id, user_id, dict(monitor))
@@ -184,31 +184,28 @@ async def testalert_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         active   = [m for m in monitors if m["active"] == 1]
 
         if not active:
-            await query.message.reply_text(
-                "⚠️ You have no active monitors to test.\n\n"
-                "Use /add to add your first monitor."
-            )
+            await query.message.reply_text(ut(lang, "testalert_no_monitors"))
             return
 
         if len(active) == 1:
+            label = active[0].get("label") or active[0].get("url", "")
             await query.edit_message_text(
-                f"🧪 Sending test alert for <b>{active[0]['label'] or active[0]['url']}</b>…",
+                ut(lang, "testalert_sending", label=label),
                 parse_mode="HTML"
             )
             await _fire_test(context, chat_id, user_id, dict(active[0]))
             return
 
-        # Show picker
+        # Show localised picker
         buttons = [
             [InlineKeyboardButton(
-                m["label"] or m["url"],
+                m.get("label") or m.get("url", ""),
                 callback_data=f"testalert_{m['id']}"
             )]
             for m in active
         ]
         await query.edit_message_text(
-            "🧪 <b>Test Alert</b>\n\n"
-            "Which monitor do you want to test?",
+            ut(lang, "testalert_picker"),
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(buttons)
         )

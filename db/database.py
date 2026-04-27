@@ -111,6 +111,7 @@ def init_db():
         "ALTER TABLE users ADD COLUMN bonus_monitors INTEGER DEFAULT 0",
         "ALTER TABLE users ADD COLUMN timezone TEXT DEFAULT 'UTC'",
         "ALTER TABLE referrals ADD COLUMN rewarded INTEGER DEFAULT 0",
+        "ALTER TABLE users ADD COLUMN language_code TEXT DEFAULT 'en'",
     ]
     for sql in migrations:
         try:
@@ -207,6 +208,27 @@ def get_user_timezone(user_id: int) -> str:
     if not user:
         return "UTC"
     return user.get("timezone") or "UTC"
+
+def get_user_language(user_id: int) -> str:
+    """Return the stored language code for a user, defaulting to 'en'."""
+    conn = get_conn()
+    c    = conn.cursor()
+    c.execute("SELECT language_code FROM users WHERE user_id = ?", (user_id,))
+    row  = c.fetchone()
+    conn.close()
+    return (row["language_code"] or "en") if row else "en"
+
+
+def set_user_language(user_id: int, language_code: str):
+    """Persist the user's Telegram language code."""
+    conn = get_conn()
+    c    = conn.cursor()
+    c.execute(
+        "UPDATE users SET language_code = ? WHERE user_id = ?",
+        (language_code, user_id)
+    )
+    conn.commit()
+    conn.close()
 
 # ---------------------------------------------------------------------------
 # Monitor helpers

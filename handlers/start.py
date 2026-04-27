@@ -10,8 +10,10 @@ from db.database import (
     get_referral_count, get_qualified_referral_count,
     mark_referral_qualified, check_and_apply_referral_reward,
     record_referral, get_monitor_limit,
+    get_user_language, set_user_language,
 )
 from config import ADMIN_IDS, FREE_LIMIT, REFERRAL_GOAL, REFERRAL_BONUS_SLOTS
+from locales.start_strings import t, resolve_lang
 
 logger = logging.getLogger(__name__)
 
@@ -34,17 +36,19 @@ def _referral_progress_bar(qualified: int, goal: int = REFERRAL_GOAL) -> str:
 # Admin notification
 # ---------------------------------------------------------------------------
 
-async def _notify_admins_new_user(bot, user):
+async def _notify_admins_new_user(bot, user, lang: str):
     """Fire-and-forget alert to all admins when a new user joins."""
     if not ADMIN_IDS:
         return
     username_str = f"@{user.username}" if user.username else "no username"
-    text = (
-        f"👤 <b>New user joined UptimeGuard</b>\n\n"
-        f"Name: <b>{user.full_name}</b>\n"
-        f"Username: {username_str}\n"
-        f"ID: <code>{user.id}</code>\n"
-        f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M UTC')}"
+    text = t(
+        "en",   # admin messages always in English
+        "admin_new_user",
+        full_name=user.full_name,
+        username=username_str,
+        user_id=user.id,
+        lang=lang,
+        time=datetime.now().strftime("%Y-%m-%d %H:%M UTC"),
     )
     for admin_id in ADMIN_IDS:
         try:
@@ -52,11 +56,17 @@ async def _notify_admins_new_user(bot, user):
         except Exception as e:
             logger.warning(f"Could not notify admin {admin_id}: {e}")
 
-async def skip_tz_callback(update, context):
+
+# ---------------------------------------------------------------------------
+# Skip-timezone callback
+# ---------------------------------------------------------------------------
+
+async def skip_tz_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from db.database import set_user_timezone
     set_user_timezone(update.callback_query.from_user.id, "UTC")
     await update.callback_query.answer("Using UTC for now.")
     await update.callback_query.edit_message_reply_markup(reply_markup=None)
+
 
 # ---------------------------------------------------------------------------
 # /start entry point
@@ -67,10 +77,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db_user, is_new = get_or_create_user(user.id, user.username)
     pro             = is_pro(user.id)
 
-    # Admin notification for brand-new users
+    # Detect and persist language on every /start so it stays current
+    # if the user switches Telegram language
+    raw_lang = user.language_code or "en"
+    lang     = resolve_lang(raw_lang)
+    set_user_language(user.id, lang)
+
+    # Admin notification for brand-new users (includes detected language)
     if is_new:
         context.application.create_task(
-            _notify_admins_new_user(context.bot, user)
+            _notify_admins_new_user(context.bot, user, raw_lang)
         )
 
     # Handle referral deep-link — ?start=ref_<referrer_id>
@@ -85,79 +101,69 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     monitors = get_all_monitors(user.id)
 
     if not monitors:
-        await _new_user_flow(update, context, db_user, pro, is_new)
+        await _new_user_flow(update, context, db_user, pro, is_new, lang)
 
-        # After the welcome message, prompt new users to set their timezone.
-        # Only shown once — if they already have a timezone set, skip it.
+        # Timezone prompt — only for users who haven't set it yet
         from db.database import get_user_timezone
         current_tz = get_user_timezone(user.id)
         if not current_tz or current_tz == "UTC":
             await update.message.reply_text(
-                "🌍 <b>Quick setup — set your timezone</b>\n\n"
-                "This helps reports and alerts arrive at the right local time for you.",
+                t(lang, "tz_prompt_title") + t(lang, "tz_prompt_body"),
                 parse_mode="HTML",
                 reply_markup=InlineKeyboardMarkup([[
                     InlineKeyboardButton(
-                        "🌍 Set My Timezone",
+                        t(lang, "btn_set_tz"),
                         callback_data="settings_set_tz"
                     ),
                     InlineKeyboardButton(
-                        "⏭ Skip",
+                        t(lang, "btn_skip_tz"),
                         callback_data="skip_tz"
                     )
                 ]])
             )
         return
 
-    await _returning_user_flow(update, context, db_user, pro, monitors)
-
+    await _returning_user_flow(update, context, db_user, pro, monitors, lang)
 
 
 # ---------------------------------------------------------------------------
-# New user flow — sticky onboarding checklist
+# New user flow
 # ---------------------------------------------------------------------------
 
-async def _new_user_flow(update, context, db_user, pro: bool, is_new: bool):
-    user      = update.effective_user
-    name      = user.first_name or "there"
-    user_id   = user.id
+async def _new_user_flow(update, context, db_user, pro: bool, is_new: bool, lang: str):
+    user    = update.effective_user
+    name    = user.first_name or "there"
+    user_id = user.id
 
     bot_username = (await context.bot.get_me()).username
     ref_link     = _get_referral_link(bot_username, user_id)
 
-    if db_user["plan"] == "trial":
-        plan_text = "✅ 7-day Pro trial active — all Pro features unlocked"
-    else:
-        plan_text = "🆓 Free plan"
-
-    # Onboarding checklist
-    checklist = (
-        "📋 <b>Getting started</b>\n"
-        "✅ Joined UptimeGuard\n"
-        "⬜ Add your first monitor\n"
-        "⬜ Receive your first alert\n\n"
+    plan_text = (
+        t(lang, "plan_trial") if db_user["plan"] == "trial"
+        else t(lang, "plan_free")
+    )
+    checklist = t(lang, "checklist")
+    greeting  = (
+        t(lang, "welcome_greeting", name=name) if is_new
+        else t(lang, "welcome_back", name=name)
     )
 
-    greeting = (
-        f"👋 Hey {name}, welcome to <b>UptimeGuard</b>!\n\n"
-        if is_new else
-        f"👋 Hey {name}, you're back!\n\n"
+    body = t(
+        lang, "welcome_body",
+        plan_text=plan_text,
+        checklist=checklist,
+        goal=REFERRAL_GOAL,
+        bonus=REFERRAL_BONUS_SLOTS,
+        ref_link=ref_link,
     )
 
     await update.message.reply_text(
-        f"{greeting}"
-        f"Get instant Telegram alerts the moment your website "
-        f"goes down — before your users notice.\n\n"
-        f"📦 {plan_text}\n\n"
-        f"{checklist}"
-        f"🎁 <b>Referral reward:</b> Invite {REFERRAL_GOAL} friends who add a monitor "
-        f"→ earn <b>+{REFERRAL_BONUS_SLOTS} free monitor slots</b>!\n\n"
-        f"Your invite link:\n<code>{ref_link}</code>",
+        greeting + body,
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("➕ Add My First Monitor", callback_data="add_monitor")],
-            [InlineKeyboardButton("📖 How it works",         callback_data="how_it_works")],
-            [InlineKeyboardButton("👥 Invite Friends",        callback_data="referral_info")],
+            [InlineKeyboardButton(t(lang, "btn_add_first"),    callback_data="add_monitor")],
+            [InlineKeyboardButton(t(lang, "btn_how_it_works"), callback_data="how_it_works")],
+            [InlineKeyboardButton(t(lang, "btn_invite"),       callback_data="referral_info")],
         ])
     )
 
@@ -166,77 +172,80 @@ async def _new_user_flow(update, context, db_user, pro: bool, is_new: bool):
 # Returning user flow
 # ---------------------------------------------------------------------------
 
-async def _returning_user_flow(update, context, db_user, pro: bool, monitors: list):
+async def _returning_user_flow(update, context, db_user, pro: bool, monitors: list, lang: str):
     user_id      = update.effective_user.id
     up_count     = sum(1 for m in monitors if m["last_status"] == "up")
     down_count   = sum(1 for m in monitors if m["last_status"] == "down")
     paused_count = sum(1 for m in monitors if m["active"] == 2)
     total        = len(monitors)
 
-    # Alert if anything is currently down — shown prominently at top
     if down_count > 0:
         health_icon = "🔴"
-        health_text = f"{down_count} monitor(s) currently DOWN ⚠️"
+        health_text = t(lang, "health_down", count=down_count)
     elif paused_count == total:
         health_icon = "⏸"
-        health_text = "All monitors paused"
+        health_text = t(lang, "health_paused")
     else:
         health_icon = "🟢"
-        health_text = "All systems operational"
+        health_text = t(lang, "health_ok")
 
-    plan_label = (
-        "✅ Pro (Trial)" if db_user["plan"] == "trial" else
-        "✅ Pro"         if pro                         else
-        "🆓 Free"
-    )
+    if db_user["plan"] == "trial":
+        plan_label = t(lang, "plan_trial_label")
+    elif pro:
+        plan_label = t(lang, "plan_pro_label")
+    else:
+        plan_label = t(lang, "plan_free_label")
 
-    # Monitor slot usage for free users
-    limit        = get_monitor_limit(user_id)
-    active_count = sum(1 for m in monitors if m["active"] == 1)
-    slots_line   = ""
+    # Slot usage line (free users only)
+    slots_line = ""
     if not pro:
-        bonus = (db_user["bonus_monitors"] or 0)
-        bonus_str = f" (+{bonus} referral bonus)" if bonus else ""
-        slots_line = f"\n📦 Monitors: <b>{active_count}/{limit}</b>{bonus_str}"
+        limit        = get_monitor_limit(user_id)
+        active_count = sum(1 for m in monitors if m["active"] == 1)
+        bonus        = db_user["bonus_monitors"] or 0
+        bonus_str    = t(lang, "slots_bonus_str", bonus=bonus) if bonus else ""
+        slots_line   = t(lang, "slots_line", active=active_count, limit=limit, bonus_str=bonus_str)
 
-    # Referral teaser for free users
+    # Referral progress bar (free users only)
     referral_line = ""
     if not pro:
-        qualified = get_qualified_referral_count(user_id)
-        bar       = _referral_progress_bar(qualified)
-        referral_line = f"\n👥 Referrals: {bar}"
+        qualified     = get_qualified_referral_count(user_id)
+        bar           = _referral_progress_bar(qualified)
+        referral_line = t(lang, "referral_bar", bar=bar)
 
-    # Nudge if user has never received a real alert (all monitors still 'unknown')
-    all_unknown  = all(m["last_status"] == "unknown" for m in monitors)
-    nudge_line   = (
-        "\n\n💡 <i>Tip: run /testalert to confirm your notifications work.</i>"
-        if all_unknown else ""
+    # Nudge if no checks have run yet
+    all_unknown = all(m["last_status"] == "unknown" for m in monitors)
+    nudge_line  = t(lang, "nudge_testalert") if all_unknown else ""
+
+    header = t(
+        lang, "returning_header",
+        icon=health_icon,
+        plan_label=plan_label,
+        slots_line=slots_line,
+        total=total,
+        up=up_count,
+        down=down_count,
+        paused=paused_count,
+        health_text=health_text,
+        referral_line=referral_line,
+        nudge_line=nudge_line,
     )
 
     buttons = [
         [
-            InlineKeyboardButton("⚡ Status",      callback_data="quick_status"),
-            InlineKeyboardButton("📋 List",        callback_data="quick_list"),
+            InlineKeyboardButton(t(lang, "btn_status"), callback_data="quick_status"),
+            InlineKeyboardButton(t(lang, "btn_list"),   callback_data="quick_list"),
         ],
         [
-            InlineKeyboardButton("➕ Add Monitor", callback_data="add_monitor"),
-            InlineKeyboardButton("📊 Report",      callback_data="quick_report"),
+            InlineKeyboardButton(t(lang, "btn_add_monitor"), callback_data="add_monitor"),
+            InlineKeyboardButton(t(lang, "btn_report"),      callback_data="quick_report"),
         ],
     ]
     if not pro:
-        buttons.append([InlineKeyboardButton("⭐ Upgrade to Pro", callback_data="upgrade")])
-        buttons.append([InlineKeyboardButton("👥 Invite Friends & Earn Rewards", callback_data="referral_info")])
+        buttons.append([InlineKeyboardButton(t(lang, "btn_upgrade"),     callback_data="upgrade")])
+        buttons.append([InlineKeyboardButton(t(lang, "btn_invite_earn"), callback_data="referral_info")])
 
     await update.message.reply_text(
-        f"{health_icon} <b>UptimeGuard</b>\n\n"
-        f"📦 Plan: <b>{plan_label}</b>{slots_line}\n"
-        f"📡 Monitors: <b>{total}</b> total • "
-        f"<b>{up_count}</b> up • "
-        f"<b>{down_count}</b> down • "
-        f"<b>{paused_count}</b> paused\n\n"
-        f"Status: <b>{health_text}</b>"
-        f"{referral_line}"
-        f"{nudge_line}",
+        header,
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(buttons)
     )
@@ -247,24 +256,15 @@ async def _returning_user_flow(update, context, db_user, pro: bool, monitors: li
 # ---------------------------------------------------------------------------
 
 async def how_it_works_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
+    query   = update.callback_query
+    user_id = query.from_user.id
+    lang    = get_user_language(user_id)
     await query.answer()
     await query.message.reply_text(
-        "📖 <b>How UptimeGuard works</b>\n\n"
-        "1️⃣ Add a URL with /add\n"
-        "2️⃣ We ping it every 5 min (free) or 1 min (Pro)\n"
-        "3️⃣ If it goes down you get an instant alert here\n"
-        "4️⃣ When it recovers you get another alert\n\n"
-        "<b>Pro also includes:</b>\n"
-        "🔐 SSL expiry warnings\n"
-        "🐢 Slow response alerts\n"
-        "📊 Weekly summary reports\n"
-        "🔗 Webhook integrations\n"
-        "👥 Team notifications\n\n"
-        "👇 Ready to add your first monitor?",
+        t(lang, "how_it_works"),
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("➕ Add Monitor", callback_data="add_monitor")
+            InlineKeyboardButton(t(lang, "btn_add_monitor"), callback_data="add_monitor")
         ]])
     )
 
@@ -272,6 +272,7 @@ async def how_it_works_callback(update: Update, context: ContextTypes.DEFAULT_TY
 async def referral_info_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query   = update.callback_query
     user_id = query.from_user.id
+    lang    = get_user_language(user_id)
     await query.answer()
 
     bot_username = (await context.bot.get_me()).username
@@ -279,60 +280,56 @@ async def referral_info_callback(update: Update, context: ContextTypes.DEFAULT_T
     qualified    = get_qualified_referral_count(user_id)
     bar          = _referral_progress_bar(qualified)
     remaining    = max(0, REFERRAL_GOAL - (qualified % REFERRAL_GOAL))
-
-    # How many full reward tiers earned total
     tiers_earned = qualified // REFERRAL_GOAL
 
     if qualified > 0 and qualified % REFERRAL_GOAL == 0:
-        reward_text = (
-            f"🎉 <b>Reward unlocked!</b> You've earned {tiers_earned} reward tier(s).\n"
-            f"Rewards are applied automatically. Keep inviting to earn more!"
-        )
+        reward_text = t(lang, "referral_reward_hit", tiers=tiers_earned)
     else:
-        reward_text = (
-            f"Invite <b>{remaining} more friend(s)</b> who add a monitor "
-            f"to unlock <b>+{REFERRAL_BONUS_SLOTS} free monitor slots</b>!"
-        )
+        reward_text = t(lang, "referral_remaining", remaining=remaining, bonus=REFERRAL_BONUS_SLOTS)
 
-    db_user = get_or_create_user(user_id)[0]
-    bonus   = db_user["bonus_monitors"] or 0
-    bonus_line = f"\n🎁 Bonus slots earned so far: <b>+{bonus}</b>" if bonus else ""
+    db_user    = get_or_create_user(user_id)[0]
+    bonus      = db_user["bonus_monitors"] or 0
+    bonus_line = t(lang, "referral_bonus_line", bonus=bonus) if bonus else ""
+
+    text = (
+        t(lang, "referral_title")
+        + t(lang, "referral_progress", bar=bar)
+        + reward_text
+        + bonus_line
+        + t(lang, "referral_link_line", ref_link=ref_link, bonus=REFERRAL_BONUS_SLOTS, goal=REFERRAL_GOAL)
+    )
 
     await query.message.reply_text(
-        f"👥 <b>Referral Programme</b>\n\n"
-        f"Progress to next reward: {bar}\n\n"
-        f"{reward_text}{bonus_line}\n\n"
-        f"📎 Your invite link:\n<code>{ref_link}</code>\n\n"
-        f"Share it with friends — they get UptimeGuard, "
-        f"you get +{REFERRAL_BONUS_SLOTS} monitor slots per {REFERRAL_GOAL} who join!",
+        text,
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("➕ Add Monitor", callback_data="add_monitor")
+            InlineKeyboardButton(t(lang, "btn_add_monitor"), callback_data="add_monitor")
         ]])
     )
 
 
 # ---------------------------------------------------------------------------
-# Quick-action callbacks — pass update, not query, so handlers work correctly
+# Quick-action callbacks — pass full update so handlers detect callback_query
 # ---------------------------------------------------------------------------
 
 async def quick_status_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    # Pass the real Update object so status() can access update.callback_query
+    await update.callback_query.answer()
     from handlers.monitors import status
     await status(update, context)
 
 
 async def quick_list_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
+    await update.callback_query.answer()
     from handlers.monitors import list_monitors
     await list_monitors(update, context)
 
 
 async def quick_report_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
+    await update.callback_query.answer()
     from handlers.reports import report
     await report(update, context)
+
+
+async def referral_info_callback_alias(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Alias kept for any existing callback registrations."""
+    await referral_info_callback(update, context)

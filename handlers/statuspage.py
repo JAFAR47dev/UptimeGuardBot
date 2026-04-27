@@ -11,16 +11,14 @@ from db.database import (
     delete_status_page,
     update_status_page_title,
     is_pro,
+    get_user_language,
 )
 from config import STATUS_PAGE_BASE_URL
+from locales.team_strings import tt
 
 # Conversation state
-ASK_TITLE = 20   # outside range used by monitors.py
+ASK_TITLE = 20
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 def _page_url(slug: str) -> str:
     base = STATUS_PAGE_BASE_URL.rstrip("/")
@@ -32,27 +30,21 @@ def _page_url(slug: str) -> str:
 # ---------------------------------------------------------------------------
 
 async def statuspage_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    /statuspage          → show existing page or create one
-    /statuspage delete   → delete the page
-    /statuspage title    → (Pro) set a custom title (starts conversation)
-    """
     user_id = update.effective_user.id
     args    = context.args or []
     pro     = is_pro(user_id)
+    lang    = get_user_language(user_id)
 
     # ── sub-command: delete ──────────────────────────────────────────────
     if args and args[0].lower() == "delete":
         page = get_status_page_by_user(user_id)
         if not page:
-            await update.message.reply_text("You don't have a status page to delete.")
+            await update.message.reply_text(tt(lang, "sp_no_page_to_delete"))
             return
 
         delete_status_page(user_id)
         await update.message.reply_text(
-            "🗑 <b>Status page deleted.</b>\n\n"
-            "The URL is now inactive. Use /statuspage to create a new one.",
-            parse_mode="HTML"
+            tt(lang, "sp_deleted"), parse_mode="HTML"
         )
         return
 
@@ -60,29 +52,23 @@ async def statuspage_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if args and args[0].lower() == "title":
         if not pro:
             await update.message.reply_text(
-                "🔒 <b>Custom titles are a Pro feature.</b>\n\n"
-                "Upgrade to set a custom title and remove the "
-                "'Powered by UptimeGuard' footer.",
+                tt(lang, "sp_title_pro_gate"),
                 parse_mode="HTML",
                 reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("⭐ Upgrade to Pro", callback_data="upgrade")
+                    InlineKeyboardButton(
+                        tt(lang, "sp_btn_upgrade"), callback_data="upgrade"
+                    )
                 ]])
             )
             return ConversationHandler.END
 
         page = get_status_page_by_user(user_id)
         if not page:
-            await update.message.reply_text(
-                "You don't have a status page yet. "
-                "Run /statuspage first to create one, then set a title."
-            )
+            await update.message.reply_text(tt(lang, "sp_no_page_for_title"))
             return ConversationHandler.END
 
         await update.message.reply_text(
-            "✏️ Send me the new title for your status page.\n\n"
-            "Example: <code>Acme Corp — Service Status</code>\n\n"
-            "Send /cancel to abort.",
-            parse_mode="HTML"
+            tt(lang, "sp_ask_title"), parse_mode="HTML"
         )
         return ASK_TITLE
 
@@ -90,51 +76,40 @@ async def statuspage_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     page = get_status_page_by_user(user_id)
 
     if page:
-        url   = _page_url(page["slug"])
-        title = page["title"] or "Status Page"
+        url      = _page_url(page["slug"])
+        title    = page["title"] or "Status Page"
         pro_line = (
-            "\n\n✅ <b>Pro:</b> branding removed, custom title active."
+            tt(lang, "sp_existing_pro")
             if pro else
-            "\n\n🆓 <b>Free plan:</b> 'Powered by UptimeGuard' footer shown.\n"
-            "Upgrade to Pro to remove branding and set a custom title."
+            tt(lang, "sp_existing_free")
         )
+        title_cmd = tt(lang, "sp_existing_title_cmd") if pro else ""
 
         await update.message.reply_text(
-            f"📡 <b>Your Status Page</b>\n\n"
-            f"🏷 Title: <b>{title}</b>\n"
-            f"🔗 URL:\n<code>{url}</code>"
-            f"{pro_line}\n\n"
-            f"<b>Commands:</b>\n"
-            f"/statuspage delete — remove your page\n"
-            + (f"/statuspage title — change the title\n" if pro else ""),
+            tt(lang, "sp_existing_page",
+               title=title, url=url,
+               pro_line=pro_line, title_cmd=title_cmd),
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("🔗 Open Status Page", url=url)
+                InlineKeyboardButton(tt(lang, "sp_btn_open"), url=url)
             ]])
         )
         return
 
     # No page yet — create one
-    slug = create_status_page(user_id)
-    url  = _page_url(slug)
-
+    slug       = create_status_page(user_id)
+    url        = _page_url(slug)
     pro_extras = (
-        "\n✅ Branding removed — your page looks fully custom.\n"
-        "Use /statuspage title to set a custom title."
+        tt(lang, "sp_created_pro_extras")
         if pro else
-        "\n🆓 Free plan: 'Powered by UptimeGuard' footer is shown.\n"
-        "Upgrade to Pro to remove it and set a custom title."
+        tt(lang, "sp_created_free_extras")
     )
 
     await update.message.reply_text(
-        f"✅ <b>Status page created!</b>\n\n"
-        f"🔗 Share this URL with your clients:\n"
-        f"<code>{url}</code>"
-        f"{pro_extras}\n\n"
-        f"The page updates live and auto-refreshes every 60 seconds.",
+        tt(lang, "sp_created", url=url, pro_extras=pro_extras),
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("🔗 Open Status Page", url=url)
+            InlineKeyboardButton(tt(lang, "sp_btn_open"), url=url)
         ]])
     )
 
@@ -146,32 +121,30 @@ async def statuspage_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def received_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
     title   = update.message.text.strip()
     user_id = update.effective_user.id
+    lang    = get_user_language(user_id)
 
     if len(title) > 80:
-        await update.message.reply_text(
-            "⚠️ Title must be 80 characters or less. Try a shorter one:"
-        )
+        await update.message.reply_text(tt(lang, "sp_title_too_long"))
         return ASK_TITLE
 
     update_status_page_title(user_id, title)
-
     page = get_status_page_by_user(user_id)
     url  = _page_url(page["slug"]) if page else ""
 
     await update.message.reply_text(
-        f"✅ <b>Title updated!</b>\n\n"
-        f"🏷 New title: <b>{title}</b>\n"
-        f"🔗 <code>{url}</code>",
+        tt(lang, "sp_title_updated", title=title, url=url),
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("🔗 Open Status Page", url=url)
+            InlineKeyboardButton(tt(lang, "sp_btn_open"), url=url)
         ]]) if url else None
     )
     return ConversationHandler.END
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("❌ Cancelled.")
+    user_id = update.effective_user.id
+    lang    = get_user_language(user_id)
+    await update.message.reply_text(tt(lang, "sp_cancelled"))
     return ConversationHandler.END
 
 
@@ -182,30 +155,25 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def create_statuspage_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query   = update.callback_query
     user_id = query.from_user.id
+    lang    = get_user_language(user_id)
     await query.answer()
 
     page = get_status_page_by_user(user_id)
-    if not page:
-        slug = create_status_page(user_id)
-    else:
-        slug = page["slug"]
-
-    url = _page_url(slug)
-    pro = is_pro(user_id)
+    slug = page["slug"] if page else create_status_page(user_id)
+    url  = _page_url(slug)
+    pro  = is_pro(user_id)
 
     pro_line = (
-        "✅ Pro: no branding, custom title via /statuspage title"
+        tt(lang, "sp_callback_pro_line")
         if pro else
-        "🆓 Free: 'Powered by UptimeGuard' footer shown."
+        tt(lang, "sp_callback_free_line")
     )
 
     await query.message.reply_text(
-        f"✅ <b>Status page ready!</b>\n\n"
-        f"🔗 <code>{url}</code>\n\n"
-        f"{pro_line}",
+        tt(lang, "sp_callback_ready", url=url, pro_line=pro_line),
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("🔗 Open Status Page", url=url)
+            InlineKeyboardButton(tt(lang, "sp_btn_open"), url=url)
         ]])
     )
 

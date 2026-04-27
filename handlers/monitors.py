@@ -23,12 +23,15 @@ from db.database import (
     FREE_CONFIRM_LIMIT, PRO_CONFIRM_LIMIT,
     get_monitor_limit,
     mark_referral_qualified, check_and_apply_referral_reward,
+    get_user_language,
 )
 from services.scheduler import schedule_monitor, schedule_ssl_check
 from config import FREE_LIMIT, REFERRAL_BONUS_SLOTS, REFERRAL_TRIAL_DAYS
 from services.checker import is_valid_url_format, verify_url_reachable
+from locales.monitors_strings import mt
 
 logger = logging.getLogger(__name__)
+
 
 # ---------------------------------------------------------------------------
 # Rate limiting
@@ -138,24 +141,19 @@ async def _send_referral_reward_message(bot, referrer_id: int, reward: dict):
 async def _post_add_followup(context):
     monitor_id = context.job.data["monitor_id"]
     chat_id    = context.job.data["chat_id"]
+    user_id    = context.job.data["user_id"]
     try:
         monitor     = get_monitor(monitor_id)
         if not monitor:
             return
         label       = monitor.get("label") or monitor.get("url", "")
         last_status = monitor.get("last_status") or "unknown"
+        lang        = get_user_language(user_id)
 
         if last_status == "up":
-            msg = (
-                f"🟢 <b>{label}</b> is <b>UP</b> and being monitored.\n\n"
-                "You'll get an instant alert the moment it goes down. "
-                "Run /testalert to make sure notifications reach you."
-            )
+            msg = mt(lang, "followup_up", label=label)
         elif last_status == "down":
-            msg = (
-                f"🔴 <b>{label}</b> appears to be <b>DOWN</b> right now!\n\n"
-                "Checking again on the next interval. You'll get a full alert either way."
-            )
+            msg = mt(lang, "followup_down", label=label)
         else:
             return   # Still unknown — don't send noise
 
@@ -178,10 +176,12 @@ async def add_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_id  = update.effective_user.id
             reply_fn = update.message.reply_text
 
+        lang = get_user_language(user_id)
+
         limited, remaining = _is_rate_limited(user_id)
         if limited:
             await reply_fn(
-                f"⏳ Please wait <b>{remaining}s</b> before adding another monitor.",
+                mt(lang, "add_rate_limit", remaining=remaining),
                 parse_mode="HTML"
             )
             return ConversationHandler.END
@@ -191,26 +191,22 @@ async def add_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         limit = get_monitor_limit(user_id)
 
         if not pro and count >= limit:
-            bonus = limit - FREE_LIMIT
-            bonus_str = f" (+{bonus} referral bonus)" if bonus else ""
+            bonus     = limit - FREE_LIMIT
+            bonus_str = mt(lang, "add_limit_bonus_str", bonus=bonus) if bonus else ""
             await reply_fn(
-                f"⚠️ You've used all <b>{limit}{bonus_str}</b> monitor slots.\n\n"
-                "Upgrade to Pro for unlimited monitors, or invite friends "
-                "to earn bonus slots via /start.",
+                mt(lang, "add_limit_reached", limit=limit, bonus_str=bonus_str),
                 parse_mode="HTML",
                 reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("⭐ Upgrade to Pro", callback_data="upgrade")
+                    InlineKeyboardButton(
+                        mt(lang, "btn_upgrade_pro"),
+                        callback_data="upgrade"
+                    )
                 ]])
             )
             return ConversationHandler.END
 
         _stamp_cooldown(user_id)
-        await reply_fn(
-            "🌐 Send me the URL to monitor.\n\n"
-            "Example: <code>https://mysite.com</code>\n\n"
-            "Send /cancel to abort.",
-            parse_mode="HTML"
-        )
+        await reply_fn(mt(lang, "add_ask_url"), parse_mode="HTML")
         return ASK_URL
 
     except Exception as e:
@@ -222,23 +218,20 @@ async def received_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         url     = update.message.text.strip()
         user_id = update.effective_user.id
+        lang    = get_user_language(user_id)
 
         if not url.startswith(("http://", "https://")):
             url = "https://" + url
 
         if not is_valid_url_format(url):
             await update.message.reply_text(
-                "⚠️ That doesn't look like a valid URL.\n\n"
-                "Please send a full URL like:\n<code>https://mysite.com</code>",
-                parse_mode="HTML"
+                mt(lang, "add_invalid_url"), parse_mode="HTML"
             )
             return ASK_URL
 
         if url_exists(user_id, url):
             await update.message.reply_text(
-                f"⚠️ You're already monitoring <code>{url}</code>\n\n"
-                "Use /list to see your active monitors.",
-                parse_mode="HTML"
+                mt(lang, "add_duplicate_url", url=url), parse_mode="HTML"
             )
             return ConversationHandler.END
 
@@ -248,25 +241,20 @@ async def received_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
         probe = await verify_url_reachable(url)
         if not probe["reachable"]:
             await update.message.reply_text(
-                f"❌ <b>Could not reach that URL.</b>\n\n"
-                f"Error: {probe['error']}\n\n"
-                "Double-check the URL and try again, or send a different one.",
+                mt(lang, "add_unreachable", error=probe["error"]),
                 parse_mode="HTML"
             )
             return ASK_URL
 
         context.user_data["new_url"] = url
-        await update.message.reply_text(
-            "✅ URL looks good!\n\n"
-            "🏷 Give it a label (or /skip to use the URL as label):"
-        )
+        await update.message.reply_text(mt(lang, "add_url_ok"))
         return ASK_LABEL
 
     except Exception as e:
         logger.error(f"received_url error: {e}", exc_info=True)
-        await update.message.reply_text(
-            "⚠️ Something went wrong. Send /cancel and try again."
-        )
+        user_id = update.effective_user.id
+        lang    = get_user_language(user_id)
+        await update.message.reply_text(mt(lang, "add_something_wrong"))
         return ASK_URL
 
 
@@ -275,11 +263,10 @@ async def received_label(update: Update, context: ContextTypes.DEFAULT_TYPE):
         label   = update.message.text.strip()
         url     = context.user_data.get("new_url")
         user_id = update.effective_user.id
+        lang    = get_user_language(user_id)
 
         if not url:
-            await update.message.reply_text(
-                "⚠️ Something went wrong. Send /cancel and try again."
-            )
+            await update.message.reply_text(mt(lang, "add_something_wrong"))
             return ConversationHandler.END
 
         pro      = is_pro(user_id)
@@ -290,7 +277,6 @@ async def received_label(update: Update, context: ContextTypes.DEFAULT_TYPE):
         schedule_monitor(context.application, monitor_id, interval)
         schedule_ssl_check(context.application, monitor_id)
 
-        # Trigger referral qualification when this is the user's first monitor
         if is_first:
             referrer_id = mark_referral_qualified(user_id)
             if referrer_id:
@@ -303,26 +289,25 @@ async def received_label(update: Update, context: ContextTypes.DEFAULT_TYPE):
         limit      = get_monitor_limit(user_id)
         active_now = count_monitors(user_id)
         slots_line = (
-            f"\n📦 Monitors used: <b>{active_now}/{limit}</b>"
+            mt(lang, "add_slots_line", active=active_now, limit=limit)
             if not pro else ""
         )
 
         await update.message.reply_text(
-            f"✅ <b>Monitor added!</b>\n\n"
-            f"🏷 Label: {label}\n"
-            f"🌐 URL: <code>{url}</code>\n"
-            f"⏱ Check interval: every {interval} min"
-            f"{slots_line}\n\n"
-            "I'll alert you instantly if it goes down.",
+            mt(lang, "add_success",
+               label=label, url=url, interval=interval, slots_line=slots_line),
             parse_mode="HTML"
         )
 
-        # Follow-up for first-time adders
         if is_first:
             context.application.job_queue.run_once(
                 _post_add_followup,
                 when=30,
-                data={"monitor_id": monitor_id, "chat_id": update.effective_chat.id},
+                data={
+                    "monitor_id": monitor_id,
+                    "chat_id":    update.effective_chat.id,
+                    "user_id":    user_id,
+                },
                 name=f"followup_{monitor_id}"
             )
 
@@ -330,9 +315,9 @@ async def received_label(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
         logger.error(f"received_label error: {e}", exc_info=True)
-        await update.message.reply_text(
-            "⚠️ Something went wrong. Send /cancel and try again."
-        )
+        user_id = update.effective_user.id
+        lang    = get_user_language(user_id)
+        await update.message.reply_text(mt(lang, "add_something_wrong"))
         return ASK_LABEL
 
 
@@ -340,11 +325,10 @@ async def skip_label(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         url     = context.user_data.get("new_url")
         user_id = update.effective_user.id
+        lang    = get_user_language(user_id)
 
         if not url:
-            await update.message.reply_text(
-                "⚠️ Something went wrong. Send /cancel and try again."
-            )
+            await update.message.reply_text(mt(lang, "add_something_wrong"))
             return ConversationHandler.END
 
         pro      = is_pro(user_id)
@@ -365,10 +349,7 @@ async def skip_label(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.clear()
 
         await update.message.reply_text(
-            f"✅ <b>Monitor added!</b>\n\n"
-            f"🌐 <code>{url}</code>\n"
-            f"⏱ Every {interval} min\n\n"
-            "You'll be alerted instantly on downtime.",
+            mt(lang, "add_success_nolabel", url=url, interval=interval),
             parse_mode="HTML"
         )
 
@@ -376,7 +357,11 @@ async def skip_label(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.application.job_queue.run_once(
                 _post_add_followup,
                 when=30,
-                data={"monitor_id": monitor_id, "chat_id": update.effective_chat.id},
+                data={
+                    "monitor_id": monitor_id,
+                    "chat_id":    update.effective_chat.id,
+                    "user_id":    user_id,
+                },
                 name=f"followup_{monitor_id}"
             )
 
@@ -431,14 +416,15 @@ async def list_monitors(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id  = update.effective_user.id
         reply_fn = update.message.reply_text
 
+    lang     = get_user_language(user_id)
     monitors = get_all_monitors(user_id)
 
     if not monitors:
-        await reply_fn("You have no monitors yet.\n\nUse /add to add one.")
+        await reply_fn(mt(lang, "list_no_monitors"))
         return
 
     pro  = is_pro(user_id)
-    text = "📋 <b>Your Monitors:</b>\n\n"
+    text = mt(lang, "list_header")
 
     for m in monitors:
         is_paused   = m["active"] == 2
@@ -457,41 +443,41 @@ async def list_monitors(update: Update, context: ContextTypes.DEFAULT_TYPE):
         uptime        = get_uptime_percent(m["id"]) if not is_paused else "—"
         uptime_str    = f"{uptime}%" if uptime != "—" else "—"
         threshold     = m.get("response_threshold_ms")
-        threshold_str = f"{threshold}ms" if threshold else "not set"
+        threshold_str = f"{threshold}ms" if threshold else mt(lang, "list_threshold_none")
         note          = m.get("note") or ""
         note_display  = (note[:NOTE_MAX_DISPLAY] + "…") if len(note) > NOTE_MAX_DISPLAY else note
         webhook       = m.get("webhook_url") or ""
         keyword       = m.get("keyword") or ""
         confirm       = m.get("confirm_count") or 1
+        paused_suffix = mt(lang, "list_paused_suffix") if is_paused else ""
 
         text += (
-            f"{status_icon} <b>{label}</b>"
-            f"{' (paused)' if is_paused else ''}\n"
+            f"{status_icon} <b>{label}</b>{paused_suffix}\n"
             f"   🌐 <code>{m.get('url', '')}</code>\n"
-            f"   📊 Uptime (7d): {uptime_str}\n"
+            + mt(lang, "list_uptime", uptime_str=uptime_str)
         )
         if note_display:
             text += f"   📝 <i>{note_display}</i>\n"
         if keyword:
-            case_str = " (case-sensitive)" if m.get("keyword_case_sensitive") else ""
-            text += f"   🔑 Keyword: <code>{keyword}</code>{case_str}\n"
+            case_str = mt(lang, "list_keyword_cs") if m.get("keyword_case_sensitive") else ""
+            text += mt(lang, "list_keyword", keyword=keyword, case_str=case_str)
         if confirm > 1:
-            text += f"   🌍 Confirmations: {confirm} checks\n"
+            text += mt(lang, "list_confirms", count=confirm)
         if pro:
-            text += f"   🐢 Slow alert: {threshold_str}\n"
+            text += mt(lang, "list_threshold", threshold_str=threshold_str)
         if pro and webhook:
             domain = urlparse(webhook).netloc or webhook
-            text += f"   🔗 Webhook: <code>{domain}</code>\n"
+            text += mt(lang, "list_webhook", domain=domain)
         text += "\n"
 
     await reply_fn(
         text,
         parse_mode="HTML",
-        reply_markup=_build_list_keyboard(monitors, pro)
+        reply_markup=_build_list_keyboard(monitors, pro, lang)
     )
 
 
-def _build_list_keyboard(monitors: list, pro: bool) -> InlineKeyboardMarkup:
+def _build_list_keyboard(monitors: list, pro: bool, lang: str) -> InlineKeyboardMarkup:
     buttons = []
     for m in monitors:
         label     = (m.get("label") or m.get("url", ""))[:18]
@@ -504,27 +490,31 @@ def _build_list_keyboard(monitors: list, pro: bool) -> InlineKeyboardMarkup:
         row1 = []
         if is_paused:
             row1.append(InlineKeyboardButton(
-                f"▶️ Resume {label}", callback_data=f"resume_{m['id']}"
+                mt(lang, "btn_resume", label=label),
+                callback_data=f"resume_{m['id']}"
             ))
         else:
             row1.append(InlineKeyboardButton(
-                f"⏸ Pause {label}", callback_data=f"pause_{m['id']}"
+                mt(lang, "btn_pause", label=label),
+                callback_data=f"pause_{m['id']}"
             ))
-        row1.append(InlineKeyboardButton("🗑", callback_data=f"del_{m['id']}"))
+        row1.append(InlineKeyboardButton(
+            mt(lang, "btn_delete"), callback_data=f"del_{m['id']}"
+        ))
         buttons.append(row1)
 
         # Row 2 — note | keyword | confirm (all users)
         row2 = [
             InlineKeyboardButton(
-                "✏️ Edit Note" if has_note else "📝 Add Note",
+                mt(lang, "btn_edit_note") if has_note else mt(lang, "btn_add_note"),
                 callback_data=f"note_{m['id']}"
             ),
             InlineKeyboardButton(
-                "✏️ Keyword" if has_kw else "🔑 Keyword",
+                mt(lang, "btn_edit_keyword") if has_kw else mt(lang, "btn_add_keyword"),
                 callback_data=f"keyword_{m['id']}"
             ),
             InlineKeyboardButton(
-                "🌍 Confirmations",
+                mt(lang, "btn_confirmations"),
                 callback_data=f"confirm_{m['id']}"
             ),
         ]
@@ -534,10 +524,11 @@ def _build_list_keyboard(monitors: list, pro: bool) -> InlineKeyboardMarkup:
         if pro:
             row3 = [
                 InlineKeyboardButton(
-                    "🐢 Threshold", callback_data=f"threshold_{m['id']}"
+                    mt(lang, "btn_threshold"),
+                    callback_data=f"threshold_{m['id']}"
                 ),
                 InlineKeyboardButton(
-                    "✏️ Webhook" if has_wh else "🔗 Webhook",
+                    mt(lang, "btn_edit_webhook") if has_wh else mt(lang, "btn_add_webhook"),
                     callback_data=f"webhook_{m['id']}"
                 ),
             ]
@@ -1324,13 +1315,14 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id  = update.effective_user.id
         reply_fn = update.message.reply_text
 
+    lang     = get_user_language(user_id)
     monitors = get_all_monitors(user_id)
 
     if not monitors:
-        await reply_fn("No monitors yet. Use /add to add your first one.")
+        await reply_fn(mt(lang, "status_no_monitors"))
         return
 
-    lines = ["⚡ <b>Monitor Status</b>\n"]
+    lines = [mt(lang, "status_header")]
 
     for m in monitors:
         label     = m.get("label") or m.get("url", "")
@@ -1338,32 +1330,33 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if is_paused:
             icon        = "⏸"
-            status_text = "Paused"
+            status_text = mt(lang, "status_paused")
         elif m.get("last_status") == "up":
             icon        = "🟢"
-            status_text = "Up"
+            status_text = mt(lang, "status_up")
         elif m.get("last_status") == "down":
             icon        = "🔴"
-            status_text = "Down"
+            status_text = mt(lang, "status_down")
         else:
             icon        = "⚪"
-            status_text = "Pending first check"
+            status_text = mt(lang, "status_pending")
 
         if m.get("last_checked"):
             last = datetime.fromisoformat(m["last_checked"])
             diff = datetime.now() - last
             mins = int(diff.total_seconds() // 60)
             if mins < 1:
-                ago = "just now"
+                ago = mt(lang, "status_just_now")
             elif mins == 1:
-                ago = "1 min ago"
+                ago = mt(lang, "status_1min")
             elif mins < 60:
-                ago = f"{mins} mins ago"
+                ago = mt(lang, "status_mins", mins=mins)
             else:
-                ago = f"{mins // 60}h ago"
+                ago = mt(lang, "status_hours", h=mins // 60)
         else:
-            ago = "not checked yet"
+            ago = mt(lang, "status_not_checked")
 
-        lines.append(f"{icon} <b>{label}</b> — {status_text} <i>({ago})</i>")
+        lines.append(mt(lang, "status_line", icon=icon, label=label,
+                        status_text=status_text, ago=ago))
 
     await reply_fn("\n".join(lines), parse_mode="HTML")

@@ -2,57 +2,49 @@
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
-from db.database import get_all_monitors, get_monitor, get_incident_rows, is_pro
+from db.database import (
+    get_all_monitors, get_monitor, get_incident_rows,
+    is_pro, get_user_language,
+)
+from locales.reports_strings import rt
 
 # ---------------------------------------------------------------------------
 # Plan limits
 # ---------------------------------------------------------------------------
 
-FREE_INCIDENT_DAYS = 7
-PRO_INCIDENT_DAYS  = 90
-MAX_INCIDENTS_SHOWN = 20   # cap per monitor to keep messages readable
+FREE_INCIDENT_DAYS  = 7
+PRO_INCIDENT_DAYS   = 90
+MAX_INCIDENTS_SHOWN = 20
 
 
 # ---------------------------------------------------------------------------
 # Core logic — pair consecutive rows into outage groups
+# Untouched: pure logic, no user-facing strings
 # ---------------------------------------------------------------------------
 
 def _build_outage_groups(rows: list) -> list:
-    """
-    Walk incident rows oldest-first and collect discrete outage groups.
-
-    Each group is a dict:
-        started_at  : datetime   — first down row
-        ended_at    : datetime | None — first subsequent up row (None = ongoing)
-        duration_m  : int | None — minutes down (None = ongoing)
-        error       : str | None — error from the first down row
-    """
     groups  = []
-    current = None   # tracks an open (unresolved) outage
+    current = None
 
     for row in rows:
         ts    = datetime.fromisoformat(row["checked_at"])
         is_up = bool(row["is_up"])
 
         if not is_up and current is None:
-            # Outage starts
             current = {
                 "started_at": ts,
                 "ended_at":   None,
                 "duration_m": None,
                 "error":      row["error_msg"] or (
-                    f"HTTP {row['status_code']}" if row["status_code"] else "Unknown error"
+                    f"HTTP {row['status_code']}" if row["status_code"] else None
                 ),
             }
-
         elif is_up and current is not None:
-            # Outage ends
             current["ended_at"]   = ts
             current["duration_m"] = max(1, int((ts - current["started_at"]).total_seconds() / 60))
             groups.append(current)
             current = None
 
-    # Still-open outage at the end of the window
     if current is not None:
         now = datetime.now()
         current["duration_m"] = max(1, int((now - current["started_at"]).total_seconds() / 60))
@@ -62,11 +54,12 @@ def _build_outage_groups(rows: list) -> list:
 
 
 def _fmt_dt(dt: datetime) -> str:
-    """Apr 3, 2:17 AM"""
-    return dt.strftime("%-d %b, %-I:%M %p").replace("AM", "AM").replace("PM", "PM")
+    """Apr 3, 2:17 AM — kept in English as it's a universal format."""
+    return dt.strftime("%-d %b, %-I:%M %p")
 
 
 def _fmt_duration(minutes: int) -> str:
+    """Compact duration — kept in English (mins/h are universally understood)."""
     if minutes < 60:
         return f"{minutes} min{'s' if minutes != 1 else ''}"
     h = minutes // 60
@@ -78,17 +71,18 @@ def _fmt_duration(minutes: int) -> str:
 # Message renderer
 # ---------------------------------------------------------------------------
 
-def _render(monitor, groups: list, days: int, ongoing: bool, pro: bool) -> str:
-    label = monitor["label"] or monitor["url"]
-    lines = [f"📋 <b>Incident Log — {label}</b>"]
-    lines.append(f"<i>Last {days} days</i>\n")
+def _render(monitor, groups: list, days: int, pro: bool, lang: str) -> str:
+    label = monitor.get("label") or monitor.get("url", "")
+    lines = [
+        rt(lang, "incidents_title",    label=label),
+        rt(lang, "incidents_subtitle", days=days),
+    ]
 
     if not groups:
-        lines.append("✅ No incidents recorded in this period.")
+        lines.append(rt(lang, "incidents_none"))
         if not pro:
             lines.append(
-                f"\n<i>Free plan shows {FREE_INCIDENT_DAYS} days. "
-                "Upgrade to Pro for 90-day history.</i>"
+                rt(lang, "incidents_none_upsell", free_days=FREE_INCIDENT_DAYS)
             )
         return "\n".join(lines)
 
@@ -98,36 +92,41 @@ def _render(monitor, groups: list, days: int, ongoing: bool, pro: bool) -> str:
 
     for g in shown:
         started_str  = _fmt_dt(g["started_at"])
-        is_ongoing   = g["ended_at"] is None
         duration_str = _fmt_duration(g["duration_m"])
-        error        = g["error"] or "Unknown error"
+        error        = g["error"] or rt(lang, "incidents_error_unknown")
+        is_ongoing   = g["ended_at"] is None
 
         if is_ongoing:
-            lines.append(
-                f"🔴 <b>Ongoing</b> — started {started_str}\n"
-                f"   ⏱ Running for {duration_str}\n"
-                f"   ❌ {error}"
-            )
+            lines.append(rt(
+                lang, "incident_ongoing",
+                started=started_str,
+                duration=duration_str,
+                error=error,
+            ))
         else:
-            lines.append(
-                f"⚫ <b>Down {duration_str}</b> — {started_str}\n"
-                f"   ❌ {error}"
-            )
+            lines.append(rt(
+                lang, "incident_resolved",
+                duration=duration_str,
+                started=started_str,
+                error=error,
+            ))
 
     if hidden:
-        lines.append(f"\n<i>…and {hidden} older incident{'s' if hidden != 1 else ''} not shown.</i>")
+        plural = "s" if hidden != 1 else ""
+        lines.append(rt(lang, "incidents_hidden", count=hidden, plural=plural))
 
     total_down_m = sum(g["duration_m"] or 0 for g in groups)
-    lines.append(
-        f"\n📊 <b>{len(groups)} incident{'s' if len(groups) != 1 else ''}</b> · "
-        f"<b>{_fmt_duration(total_down_m)}</b> total downtime"
-    )
+    count        = len(groups)
+    plural       = "s" if count != 1 else ""
+    lines.append(rt(
+        lang, "incidents_summary",
+        count=count,
+        plural=plural,
+        total_down=_fmt_duration(total_down_m),
+    ))
 
     if not pro:
-        lines.append(
-            f"\n<i>Free plan shows {FREE_INCIDENT_DAYS} days. "
-            "Upgrade to Pro for 90-day history.</i>"
-        )
+        lines.append(rt(lang, "incidents_upsell", free_days=FREE_INCIDENT_DAYS))
 
     return "\n".join(lines)
 
@@ -136,12 +135,10 @@ def _render(monitor, groups: list, days: int, ongoing: bool, pro: bool) -> str:
 # Shared display helper
 # ---------------------------------------------------------------------------
 
-async def _show_incidents(reply_fn, monitor, days: int, pro: bool):
-    rows   = get_incident_rows(monitor["id"], days)
-    groups = _build_outage_groups(rows)
-    ongoing = any(g["ended_at"] is None for g in groups)
-    text   = _render(monitor, groups, days, ongoing, pro)
-
+async def _show_incidents(reply_fn, monitor, days: int, pro: bool, lang: str):
+    rows    = get_incident_rows(monitor["id"], days)
+    groups  = _build_outage_groups(rows)
+    text    = _render(monitor, groups, days, pro, lang)
     await reply_fn(text, parse_mode="HTML")
 
 
@@ -150,11 +147,11 @@ async def _show_incidents(reply_fn, monitor, days: int, pro: bool):
 # ---------------------------------------------------------------------------
 
 async def incidents_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id  = update.effective_user.id
-    pro      = is_pro(user_id)
-    days     = FREE_INCIDENT_DAYS if not pro else PRO_INCIDENT_DAYS
+    user_id = update.effective_user.id
+    pro     = is_pro(user_id)
+    lang    = get_user_language(user_id)
+    days    = FREE_INCIDENT_DAYS if not pro else PRO_INCIDENT_DAYS
 
-    # Pro users can pass a custom day range: /incidents 30
     if pro and context.args:
         try:
             requested = int(context.args[0])
@@ -166,32 +163,28 @@ async def incidents_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     active   = [m for m in monitors if m["active"] in (1, 2)]
 
     if not active:
-        await update.message.reply_text(
-            "You have no monitors yet. Use /add to add your first one."
-        )
+        await update.message.reply_text(rt(lang, "incidents_no_monitors"))
         return
 
     if len(active) == 1:
         await _show_incidents(
             update.message.reply_text,
-            active[0],
-            days,
-            pro,
+            active[0], days, pro, lang,
         )
         return
 
-    # Multiple monitors — show picker
+    # Multiple monitors — localised picker
     buttons = [
         [InlineKeyboardButton(
-            m["label"] or m["url"],
+            m.get("label") or m.get("url", ""),
             callback_data=f"incidents_{m['id']}_{days}"
         )]
         for m in active
     ]
     await update.message.reply_text(
-        "📋 <b>Incident Log</b>\n\nWhich monitor do you want to view?",
+        rt(lang, "incidents_picker_title"),
         parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(buttons)
+        reply_markup=InlineKeyboardMarkup(buttons),
     )
 
 
@@ -202,22 +195,20 @@ async def incidents_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def incidents_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query   = update.callback_query
     user_id = query.from_user.id
+    lang    = get_user_language(user_id)
     await query.answer()
 
-    # callback_data: "incidents_<monitor_id>_<days>"
     parts      = query.data.split("_")
     monitor_id = int(parts[1])
     days       = int(parts[2]) if len(parts) > 2 else FREE_INCIDENT_DAYS
 
     monitor = get_monitor(monitor_id)
     if not monitor or monitor["user_id"] != user_id:
-        await query.message.reply_text("⚠️ Monitor not found.")
+        await query.message.reply_text(rt(lang, "incidents_not_found"))
         return
 
     pro = is_pro(user_id)
     await _show_incidents(
         query.message.reply_text,
-        monitor,
-        days,
-        pro,
+        monitor, days, pro, lang,
     )

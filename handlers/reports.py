@@ -1,7 +1,8 @@
 # handlers/reports.py
 from telegram import Update
 from telegram.ext import ContextTypes
-from db.database import get_monitors, get_uptime_percent, get_conn
+from db.database import get_monitors, get_uptime_percent, get_conn, get_user_language
+from locales.reports_strings import rt
 
 
 async def report(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -14,16 +15,17 @@ async def report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id  = update.effective_user.id
         reply_fn = update.message.reply_text
 
+    lang     = get_user_language(user_id)
     monitors = get_monitors(user_id)
 
     if not monitors:
-        await reply_fn("No monitors found. Use /add to start.")
+        await reply_fn(rt(lang, "report_no_monitors"))
         return
 
-    text = "📊 <b>Uptime Report (Last 7 days)</b>\n\n"
+    text = rt(lang, "report_header")
 
     for m in monitors:
-        label  = m["label"] or m["url"]
+        label  = m.get("label") or m.get("url", "")
         uptime = get_uptime_percent(m["id"], days=7)
 
         conn = get_conn()
@@ -37,13 +39,18 @@ async def report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         row    = c.fetchone()
         conn.close()
-        avg_ms = round(row["avg_ms"]) if row and row["avg_ms"] else "N/A"
+        avg_ms = (
+            round(row["avg_ms"]) if row and row["avg_ms"]
+            else rt(lang, "report_avg_na")
+        )
 
         status_icon = "🟢" if m.get("last_status") == "up" else "🔴"
-        text += (
-            f"{status_icon} <b>{label}</b>\n"
-            f"   📈 Uptime: <b>{uptime}%</b>\n"
-            f"   ⚡ Avg response: <b>{avg_ms}ms</b>\n\n"
+        text += rt(
+            lang, "report_row",
+            icon=status_icon,
+            label=label,
+            uptime=uptime,
+            avg_ms=avg_ms,
         )
 
     await reply_fn(text, parse_mode="HTML")
