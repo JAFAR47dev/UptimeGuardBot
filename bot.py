@@ -1,4 +1,3 @@
-# bot.py
 import logging
 import datetime
 from telegram.ext import (
@@ -58,7 +57,9 @@ from handlers.myplan import myplan
 from handlers.settings import (
     settings_command,
     settings_conversation,
-    settings_myplan_callback,   # ← new
+    settings_myplan_callback,
+    language_btn_callback,
+    language_set_callback,
 )
 
 
@@ -123,7 +124,7 @@ def main():
     app.add_handler(admin_conversation)
     app.add_handler(settings_conversation)
 
-    # Commands  (myplan removed — accessed via /settings instead)
+    # Commands
     app.add_handler(CommandHandler("start",       start))
     app.add_handler(CommandHandler("list",        list_monitors))
     app.add_handler(CommandHandler("report",      report))
@@ -151,6 +152,10 @@ def main():
     app.add_handler(CallbackQueryHandler(settings_command,          pattern="^settings$"))
     app.add_handler(CallbackQueryHandler(settings_myplan_callback,  pattern="^settings_myplan$"))
     app.add_handler(CallbackQueryHandler(myplan,                    pattern="^myplan$"))
+
+    # Language picker — exact match before prefix
+    app.add_handler(CallbackQueryHandler(language_btn_callback,  pattern="^settings_lang$"))
+    app.add_handler(CallbackQueryHandler(language_set_callback,  pattern="^setlang_"))
 
     app.add_handler(CallbackQueryHandler(skip_tz_callback, pattern="^skip_tz$"))
 

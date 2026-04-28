@@ -1,4 +1,3 @@
-# handlers/settings.py
 import asyncio
 import logging
 from datetime import datetime
@@ -9,8 +8,8 @@ from telegram.ext import (
     CommandHandler, MessageHandler,
     CallbackQueryHandler, filters
 )
-from db.database import get_user, set_user_timezone, get_user_timezone, get_user_language
-from locales.help_strings import ht
+from db.database import get_user, set_user_timezone, get_user_timezone, get_user_language, set_user_language
+from locales.help_strings import ht, LANGUAGE_OPTIONS
 
 logger = logging.getLogger(__name__)
 
@@ -37,16 +36,67 @@ async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply_fn(
         ht(lang, "settings_menu", current_tz=current_tz),
         parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton(
-                ht(lang, "btn_change_tz"),
-                callback_data="settings_change_tz"
-            ),
-            InlineKeyboardButton(
-                ht(lang, "btn_my_plan"),
-                callback_data="settings_myplan"
-            ),
-        ]])
+        reply_markup=InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(
+                    ht(lang, "btn_change_tz"),
+                    callback_data="settings_change_tz"
+                ),
+                InlineKeyboardButton(
+                    ht(lang, "btn_my_plan"),
+                    callback_data="settings_myplan"
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    ht(lang, "btn_language"),
+                    callback_data="settings_lang"
+                ),
+            ],
+        ])
+    )
+
+
+# ---------------------------------------------------------------------------
+# Language picker
+# ---------------------------------------------------------------------------
+
+async def language_btn_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show the language picker inline keyboard."""
+    query   = update.callback_query
+    user_id = query.from_user.id
+    lang    = get_user_language(user_id)
+    await query.answer()
+
+    # Build 2-column grid of language buttons
+    options = list(LANGUAGE_OPTIONS.items())
+    rows = []
+    for i in range(0, len(options), 2):
+        row = []
+        for code, label in options[i:i + 2]:
+            row.append(InlineKeyboardButton(label, callback_data=f"setlang_{code}"))
+        rows.append(row)
+
+    await query.message.reply_text(
+        ht(lang, "language_picker_prompt"),
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(rows),
+    )
+
+
+async def language_set_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Save the chosen language and confirm in the NEW language."""
+    query    = update.callback_query
+    user_id  = query.from_user.id
+    new_lang = query.data.split("_", 1)[1]   # "setlang_fr" → "fr"
+    await query.answer()
+
+    set_user_language(user_id, new_lang)
+
+    # Confirm in the newly selected language so the user immediately sees proof
+    await query.message.reply_text(
+        ht(new_lang, "language_set_confirm"),
+        parse_mode="HTML",
     )
 
 

@@ -1,4 +1,3 @@
-# locales/help_strings.py
 """
 Translation strings for handlers/settings.py and handlers/help.py.
 
@@ -21,6 +20,11 @@ _STRINGS: dict[str, dict[str, str]] = {
             "What would you like to update?",
         "btn_change_tz":        "🌍 Change Timezone",
         "btn_my_plan":          "📦 My Plan",
+        "btn_language":         "🌐 Language",
+        "language_picker_prompt":
+            "🌐 <b>Choose your language</b>\n\n"
+            "Tap a language below:",
+        "language_set_confirm": "✅ Language set to <b>English</b> 🇬🇧",
         "tz_change_prompt":
             "🌍 <b>Set Your Timezone</b>\n\n"
             "Type the name of your city and I'll detect your timezone.\n\n"
@@ -188,6 +192,11 @@ _STRINGS: dict[str, dict[str, str]] = {
             "Que veux-tu mettre à jour ?",
         "btn_change_tz":        "🌍 Changer le fuseau horaire",
         "btn_my_plan":          "📦 Mon plan",
+        "btn_language":         "🌐 Langue",
+        "language_picker_prompt":
+            "🌐 <b>Choisis ta langue</b>\n\n"
+            "Appuie sur une langue ci-dessous :",
+        "language_set_confirm": "✅ Langue définie sur <b>Français</b> 🇫🇷",
         "tz_change_prompt":
             "🌍 <b>Définir ton fuseau horaire</b>\n\n"
             "Tape le nom de ta ville et je détecterai ton fuseau horaire.\n\n"
@@ -346,6 +355,11 @@ _STRINGS: dict[str, dict[str, str]] = {
             "¿Qué quieres actualizar?",
         "btn_change_tz":        "🌍 Cambiar zona horaria",
         "btn_my_plan":          "📦 Mi plan",
+        "btn_language":         "🌐 Idioma",
+        "language_picker_prompt":
+            "🌐 <b>Elige tu idioma</b>\n\n"
+            "Toca un idioma a continuación:",
+        "language_set_confirm": "✅ Idioma establecido en <b>Español</b> 🇪🇸",
         "tz_change_prompt":
             "🌍 <b>Establecer tu zona horaria</b>\n\n"
             "Escribe el nombre de tu ciudad y detectaré tu zona horaria.\n\n"
@@ -503,6 +517,11 @@ _STRINGS: dict[str, dict[str, str]] = {
             "ماذا تريد تحديثه؟",
         "btn_change_tz":        "🌍 تغيير المنطقة الزمنية",
         "btn_my_plan":          "📦 خطتي",
+        "btn_language":         "🌐 اللغة",
+        "language_picker_prompt":
+            "🌐 <b>اختر لغتك</b>\n\n"
+            "اضغط على لغة أدناه:",
+        "language_set_confirm": "✅ تم تعيين اللغة إلى <b>العربية</b> 🇸🇦",
         "tz_change_prompt":
             "🌍 <b>تعيين منطقتك الزمنية</b>\n\n"
             "اكتب اسم مدينتك وسأكتشف منطقتك الزمنية.\n\n"
@@ -659,6 +678,11 @@ _STRINGS: dict[str, dict[str, str]] = {
             "O que você gostaria de atualizar?",
         "btn_change_tz":        "🌍 Alterar fuso horário",
         "btn_my_plan":          "📦 Meu plano",
+        "btn_language":         "🌐 Idioma",
+        "language_picker_prompt":
+            "🌐 <b>Escolha seu idioma</b>\n\n"
+            "Toque em um idioma abaixo:",
+        "language_set_confirm": "✅ Idioma definido para <b>Português</b> 🇧🇷",
         "tz_change_prompt":
             "🌍 <b>Definir seu fuso horário</b>\n\n"
             "Digite o nome da sua cidade e eu detectarei seu fuso horário.\n\n"
@@ -816,6 +840,11 @@ _STRINGS: dict[str, dict[str, str]] = {
             "Что хочешь обновить?",
         "btn_change_tz":        "🌍 Изменить часовой пояс",
         "btn_my_plan":          "📦 Мой тариф",
+        "btn_language":         "🌐 Язык",
+        "language_picker_prompt":
+            "🌐 <b>Выбери язык</b>\n\n"
+            "Нажми на язык ниже:",
+        "language_set_confirm": "✅ Язык установлен на <b>Русский</b> 🇷🇺",
         "tz_change_prompt":
             "🌍 <b>Установить часовой пояс</b>\n\n"
             "Напиши название своего города, и я определю часовой пояс.\n\n"
@@ -969,6 +998,16 @@ _STRINGS: dict[str, dict[str, str]] = {
 SUPPORTED_LANGS = set(_STRINGS.keys())
 _FALLBACK       = "en"
 
+# Maps each lang code to its option button label (flag + name in that language)
+LANGUAGE_OPTIONS: dict[str, str] = {
+    "en": "🇬🇧 English",
+    "fr": "🇫🇷 Français",
+    "es": "🇪🇸 Español",
+    "ar": "🇸🇦 العربية",
+    "pt": "🇧🇷 Português",
+    "ru": "🇷🇺 Русский",
+}
+
 
 def ht(lang: str, key: str, **kwargs) -> str:
     """
@@ -982,6 +1021,5 @@ def ht(lang: str, key: str, **kwargs) -> str:
     table  = _STRINGS.get(lang) or _STRINGS[_FALLBACK]
     string = table.get(key) or _STRINGS[_FALLBACK].get(key, f"[{key}]")
     return string.format(**kwargs) if kwargs else string
-    
     
     
