@@ -1,5 +1,4 @@
 import logging
-import os
 import datetime
 from telegram.ext import (
     ApplicationBuilder, CommandHandler,
@@ -70,33 +69,14 @@ logging.getLogger("telegram").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Detect environment
-# RENDER_EXTERNAL_URL is injected automatically by Render on every deploy.
-# When running locally it won't exist, so we fall back to polling.
-# ---------------------------------------------------------------------------
-RENDER_URL = os.getenv("RENDER_EXTERNAL_URL", "").rstrip("/")
-ON_RENDER  = bool(RENDER_URL)
-
 
 async def post_init(app):
     await start_web_server(app, port=STATUS_PAGE_PORT)
     app.bot_data["aiohttp_session"] = await create_shared_session()
     restore_all_monitors(app)
-
-    # Set Telegram webhook automatically when running on Render
-    if ON_RENDER:
-        webhook_url = f"{RENDER_URL}/{BOT_TOKEN}"
-        await app.bot.set_webhook(
-            url=webhook_url,
-            allowed_updates=["message", "callback_query", "pre_checkout_query"],
-            drop_pending_updates=True,
-        )
-        logger.info(f"Webhook set to {webhook_url}")
-    else:
-        # Make sure no stale webhook is set when running locally
-        await app.bot.delete_webhook(drop_pending_updates=True)
-        logger.info("Running in polling mode (local)")
+    # Ensure no stale webhook is registered — polling and webhooks conflict
+    await app.bot.delete_webhook(drop_pending_updates=True)
+    logger.info("Webhook cleared — running in polling mode")
 
 
 async def post_shutdown(app):
@@ -229,19 +209,12 @@ def main():
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, payment_success))
 
     # -----------------------------------------------------------------------
-    # Run — webhook on Render, polling locally
+    # Always use polling — the aiohttp status page server already owns the
+    # port so PTB's built-in webhook server can't run alongside it.
+    # Polling works fine on Render since the process runs continuously.
     # -----------------------------------------------------------------------
-    if ON_RENDER:
-        logger.info("Starting webhook server")
-        app.run_webhook(
-            listen="0.0.0.0",
-            port=STATUS_PAGE_PORT,
-            url_path=BOT_TOKEN,
-            webhook_url=f"{RENDER_URL}/{BOT_TOKEN}",
-        )
-    else:
-        logger.info("Starting polling")
-        app.run_polling()
+    logger.info("Starting polling")
+    app.run_polling()
 
 
 if __name__ == "__main__":
