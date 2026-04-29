@@ -1,4 +1,5 @@
 import logging
+import os
 import datetime
 from telegram.ext import (
     ApplicationBuilder, CommandHandler,
@@ -10,7 +11,7 @@ from db.database import init_db
 from services.scheduler import restore_all_monitors
 from handlers.start import (
     start,
-    skip_tz_callback,    
+    skip_tz_callback,
     how_it_works_callback,
     quick_status_callback,
     quick_list_callback,
@@ -67,11 +68,35 @@ logging.basicConfig(level=logging.INFO)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("telegram").setLevel(logging.WARNING)
 
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Detect environment
+# RENDER_EXTERNAL_URL is injected automatically by Render on every deploy.
+# When running locally it won't exist, so we fall back to polling.
+# ---------------------------------------------------------------------------
+RENDER_URL = os.getenv("RENDER_EXTERNAL_URL", "").rstrip("/")
+ON_RENDER  = bool(RENDER_URL)
+
 
 async def post_init(app):
     await start_web_server(app, port=STATUS_PAGE_PORT)
     app.bot_data["aiohttp_session"] = await create_shared_session()
     restore_all_monitors(app)
+
+    # Set Telegram webhook automatically when running on Render
+    if ON_RENDER:
+        webhook_url = f"{RENDER_URL}/{BOT_TOKEN}"
+        await app.bot.set_webhook(
+            url=webhook_url,
+            allowed_updates=["message", "callback_query", "pre_checkout_query"],
+            drop_pending_updates=True,
+        )
+        logger.info(f"Webhook set to {webhook_url}")
+    else:
+        # Make sure no stale webhook is set when running locally
+        await app.bot.delete_webhook(drop_pending_updates=True)
+        logger.info("Running in polling mode (local)")
 
 
 async def post_shutdown(app):
@@ -84,13 +109,14 @@ async def post_shutdown(app):
 def main():
     init_db()
 
-    app = (
+    builder = (
         ApplicationBuilder()
         .token(BOT_TOKEN)
         .post_init(post_init)
         .post_stop(post_shutdown)
-        .build()
     )
+
+    app = builder.build()
 
     app.job_queue.run_daily(
         check_expired_trials,
@@ -149,20 +175,20 @@ def main():
     ))
 
     # Settings & plan
-    app.add_handler(CallbackQueryHandler(settings_command,          pattern="^settings$"))
-    app.add_handler(CallbackQueryHandler(settings_myplan_callback,  pattern="^settings_myplan$"))
-    app.add_handler(CallbackQueryHandler(myplan,                    pattern="^myplan$"))
+    app.add_handler(CallbackQueryHandler(settings_command,         pattern="^settings$"))
+    app.add_handler(CallbackQueryHandler(settings_myplan_callback, pattern="^settings_myplan$"))
+    app.add_handler(CallbackQueryHandler(myplan,                   pattern="^myplan$"))
 
     # Language picker — exact match before prefix
-    app.add_handler(CallbackQueryHandler(language_btn_callback,  pattern="^settings_lang$"))
-    app.add_handler(CallbackQueryHandler(language_set_callback,  pattern="^setlang_"))
+    app.add_handler(CallbackQueryHandler(language_btn_callback, pattern="^settings_lang$"))
+    app.add_handler(CallbackQueryHandler(language_set_callback, pattern="^setlang_"))
 
     app.add_handler(CallbackQueryHandler(skip_tz_callback, pattern="^skip_tz$"))
 
     # Monitor actions
-    app.add_handler(CallbackQueryHandler(pause_callback,   pattern="^pause_"))
-    app.add_handler(CallbackQueryHandler(resume_callback,  pattern="^resume_"))
-    app.add_handler(CallbackQueryHandler(snooze_callback,  pattern="^snooze_"))
+    app.add_handler(CallbackQueryHandler(pause_callback,  pattern="^pause_"))
+    app.add_handler(CallbackQueryHandler(resume_callback, pattern="^resume_"))
+    app.add_handler(CallbackQueryHandler(snooze_callback, pattern="^snooze_"))
 
     # Test alert — specific before generic
     app.add_handler(CallbackQueryHandler(testalert_callback, pattern="^testalert_"))
@@ -180,11 +206,11 @@ def main():
     app.add_handler(CallbackQueryHandler(team_remove_callback,         pattern="^team_remove_"))
 
     # Start menu
-    app.add_handler(CallbackQueryHandler(help_command,           pattern="^help$"))
-    app.add_handler(CallbackQueryHandler(how_it_works_callback,  pattern="^how_it_works$"))
-    app.add_handler(CallbackQueryHandler(quick_status_callback,  pattern="^quick_status$"))
-    app.add_handler(CallbackQueryHandler(quick_list_callback,    pattern="^quick_list$"))
-    app.add_handler(CallbackQueryHandler(quick_report_callback,  pattern="^quick_report$"))
+    app.add_handler(CallbackQueryHandler(help_command,          pattern="^help$"))
+    app.add_handler(CallbackQueryHandler(how_it_works_callback, pattern="^how_it_works$"))
+    app.add_handler(CallbackQueryHandler(quick_status_callback, pattern="^quick_status$"))
+    app.add_handler(CallbackQueryHandler(quick_list_callback,   pattern="^quick_list$"))
+    app.add_handler(CallbackQueryHandler(quick_report_callback, pattern="^quick_report$"))
     app.add_handler(CallbackQueryHandler(referral_info_callback, pattern="^referral_info$"))
 
     # Status page
@@ -194,15 +220,28 @@ def main():
     ))
 
     # Payments
-    app.add_handler(CallbackQueryHandler(pay_callback,          pattern="^pay_pro$"))
-    app.add_handler(CallbackQueryHandler(upgrade,               pattern="^upgrade$"))
-    app.add_handler(CallbackQueryHandler(pay_monthly_callback,  pattern="^pay_monthly$"))
-    app.add_handler(CallbackQueryHandler(pay_3month_callback,   pattern="^pay_3month$"))
-    app.add_handler(CallbackQueryHandler(pay_yearly_callback,   pattern="^pay_yearly$"))
+    app.add_handler(CallbackQueryHandler(pay_callback,         pattern="^pay_pro$"))
+    app.add_handler(CallbackQueryHandler(upgrade,              pattern="^upgrade$"))
+    app.add_handler(CallbackQueryHandler(pay_monthly_callback, pattern="^pay_monthly$"))
+    app.add_handler(CallbackQueryHandler(pay_3month_callback,  pattern="^pay_3month$"))
+    app.add_handler(CallbackQueryHandler(pay_yearly_callback,  pattern="^pay_yearly$"))
     app.add_handler(PreCheckoutQueryHandler(precheckout))
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, payment_success))
 
-    app.run_polling()
+    # -----------------------------------------------------------------------
+    # Run — webhook on Render, polling locally
+    # -----------------------------------------------------------------------
+    if ON_RENDER:
+        logger.info("Starting webhook server")
+        app.run_webhook(
+            listen="0.0.0.0",
+            port=STATUS_PAGE_PORT,
+            url_path=BOT_TOKEN,
+            webhook_url=f"{RENDER_URL}/{BOT_TOKEN}",
+        )
+    else:
+        logger.info("Starting polling")
+        app.run_polling()
 
 
 if __name__ == "__main__":

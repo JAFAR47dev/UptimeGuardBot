@@ -1,4 +1,4 @@
-# handlers/start.py
+#handlers/start.py
 import logging
 from datetime import datetime
 
@@ -77,11 +77,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db_user, is_new = get_or_create_user(user.id, user.username)
     pro             = is_pro(user.id)
 
-    # Detect and persist language on every /start so it stays current
-    # if the user switches Telegram language
+    # Language resolution:
+    # - New users: seed from Telegram language_code
+    # - Existing users: always use their saved language (may have been
+    #   manually overridden via /settings → Language picker)
     raw_lang = user.language_code or "en"
-    lang     = resolve_lang(raw_lang)
-    set_user_language(user.id, lang)
+    if is_new:
+        lang = resolve_lang(raw_lang)
+        set_user_language(user.id, lang)
+    else:
+        lang = get_user_language(user.id)
 
     # Admin notification for brand-new users (includes detected language)
     if is_new:
