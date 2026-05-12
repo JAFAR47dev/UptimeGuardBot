@@ -1,4 +1,3 @@
-# db/database.py
 import sqlite3
 import secrets
 from config import DB_PATH
@@ -112,6 +111,8 @@ def init_db():
         "ALTER TABLE users ADD COLUMN timezone TEXT DEFAULT 'UTC'",
         "ALTER TABLE referrals ADD COLUMN rewarded INTEGER DEFAULT 0",
         "ALTER TABLE users ADD COLUMN language_code TEXT DEFAULT 'en'",
+        "ALTER TABLE users ADD COLUMN pro_expires TEXT",
+        "ALTER TABLE users ADD COLUMN pro_plan_type TEXT",
     ]
     for sql in migrations:
         try:
@@ -146,7 +147,7 @@ def get_or_create_user(user_id: int, username: str = None) -> tuple:
     else:
         is_new = False
     conn.close()
-    return dict(user) if user else None, is_new   # ← dict()
+    return dict(user) if user else None, is_new
 
 
 def get_user(user_id: int) -> dict | None:
@@ -155,13 +156,22 @@ def get_user(user_id: int) -> dict | None:
     c.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
     user = c.fetchone()
     conn.close()
-    return dict(user) if user else None   # ← dict()
+    return dict(user) if user else None
 
 
-def upgrade_user(user_id: int, plan: str):
+def upgrade_user(user_id: int, plan: str, pro_expires: str = None, pro_plan_type: str = None):
+    """
+    Upgrade a user's plan. Optionally set pro_expires and pro_plan_type at
+    the same time so a single DB write handles everything payment_success needs.
+    """
     conn = get_conn()
     c    = conn.cursor()
-    c.execute("UPDATE users SET plan = ? WHERE user_id = ?", (plan, user_id))
+    c.execute(
+        """UPDATE users
+           SET plan = ?, pro_expires = ?, pro_plan_type = ?
+           WHERE user_id = ?""",
+        (plan, pro_expires, pro_plan_type, user_id)
+    )
     conn.commit()
     conn.close()
 
@@ -180,16 +190,13 @@ def is_pro(user_id: int) -> bool:
 
 
 def get_monitor_limit(user_id: int) -> int:
-    """
-    Effective free monitor limit for a user, including any referral bonus slots.
-    Pro users have no limit (returns a large sentinel).
-    """
     from config import FREE_LIMIT
     if is_pro(user_id):
         return 999_999
     user  = get_user(user_id)
     bonus = (user["bonus_monitors"] or 0) if user else 0
     return FREE_LIMIT + bonus
+
 
 def set_user_timezone(user_id: int, timezone: str):
     conn = get_conn()
@@ -203,14 +210,13 @@ def set_user_timezone(user_id: int, timezone: str):
 
 
 def get_user_timezone(user_id: int) -> str:
-    """Returns the user's timezone string, defaulting to UTC."""
     user = get_user(user_id)
     if not user:
         return "UTC"
     return user.get("timezone") or "UTC"
 
+
 def get_user_language(user_id: int) -> str:
-    """Return the stored language code for a user, defaulting to 'en'."""
     conn = get_conn()
     c    = conn.cursor()
     c.execute("SELECT language_code FROM users WHERE user_id = ?", (user_id,))
@@ -220,7 +226,6 @@ def get_user_language(user_id: int) -> str:
 
 
 def set_user_language(user_id: int, language_code: str):
-    """Persist the user's Telegram language code."""
     conn = get_conn()
     c    = conn.cursor()
     c.execute(
@@ -253,7 +258,7 @@ def get_monitors(user_id: int) -> list[dict]:
     c.execute("SELECT * FROM monitors WHERE user_id = ? AND active = 1", (user_id,))
     rows = c.fetchall()
     conn.close()
-    return [dict(r) for r in rows]   # ← dict()
+    return [dict(r) for r in rows]
 
 
 def get_monitor(monitor_id: int) -> dict | None:
@@ -262,8 +267,7 @@ def get_monitor(monitor_id: int) -> dict | None:
     c.execute("SELECT * FROM monitors WHERE id = ?", (monitor_id,))
     row  = c.fetchone()
     conn.close()
-    return dict(row) if row else None   # ← dict()
-
+    return dict(row) if row else None
 
 
 def count_monitors(user_id: int) -> int:
@@ -321,7 +325,7 @@ def get_all_monitors(user_id: int) -> list[dict]:
     )
     rows = c.fetchall()
     conn.close()
-    return [dict(r) for r in rows]   # ← dict()
+    return [dict(r) for r in rows]
 
 
 def pause_monitor(monitor_id: int, user_id: int):
@@ -516,6 +520,7 @@ def add_team_member(owner_id: int, member_user_id: int, label: str = None) -> bo
         conn.close()
         return False
 
+
 def get_team_members(owner_id: int) -> list[dict]:
     conn = get_conn()
     c    = conn.cursor()
@@ -525,7 +530,7 @@ def get_team_members(owner_id: int) -> list[dict]:
     )
     rows = c.fetchall()
     conn.close()
-    return [dict(r) for r in rows]   # ← dict()
+    return [dict(r) for r in rows]
 
 
 def count_team_members(owner_id: int) -> int:
@@ -558,7 +563,6 @@ def get_alert_recipients(owner_id: int) -> list:
 # ---------------------------------------------------------------------------
 
 def record_referral(referrer_id: int, new_user_id: int):
-    """Record that new_user_id signed up via referrer_id's link."""
     conn = get_conn()
     c    = conn.cursor()
     try:
@@ -574,7 +578,6 @@ def record_referral(referrer_id: int, new_user_id: int):
 
 
 def get_referral_count(user_id: int) -> int:
-    """Return number of qualified referrals (referred user has added ≥1 monitor)."""
     conn = get_conn()
     c    = conn.cursor()
     try:
@@ -590,6 +593,7 @@ def get_referral_count(user_id: int) -> int:
     conn.close()
     return count
 
+
 def mark_referral_qualified(referred_id: int) -> int | None:
     conn = get_conn()
     c    = conn.cursor()
@@ -601,7 +605,7 @@ def mark_referral_qualified(referred_id: int) -> int | None:
     if not row:
         conn.close()
         return None
-    referrer_id = row["referrer_id"]   # sqlite3.Row bracket access is fine here
+    referrer_id = row["referrer_id"]
     c.execute(
         "UPDATE referrals SET qualified = 1 WHERE referred_id = ?",
         (referred_id,)
@@ -612,7 +616,6 @@ def mark_referral_qualified(referred_id: int) -> int | None:
 
 
 def get_qualified_referral_count(referrer_id: int) -> int:
-    """Number of referrals that have been marked qualified."""
     conn = get_conn()
     c    = conn.cursor()
     c.execute(
@@ -622,6 +625,7 @@ def get_qualified_referral_count(referrer_id: int) -> int:
     count = c.fetchone()[0]
     conn.close()
     return count
+
 
 def check_and_apply_referral_reward(referrer_id: int) -> dict | None:
     from config import REFERRAL_GOAL, REFERRAL_BONUS_SLOTS, REFERRAL_TRIAL_DAYS
@@ -661,7 +665,7 @@ def check_and_apply_referral_reward(referrer_id: int) -> dict | None:
     if not user:
         return None
 
-    user = dict(user)   # ← dict() before accessing fields
+    user = dict(user)
 
     reward_type = None
     if user["plan"] == "free":
@@ -700,7 +704,7 @@ def check_and_apply_referral_reward(referrer_id: int) -> dict | None:
         "bonus_slots": REFERRAL_BONUS_SLOTS if reward_type == "slots" else 0,
         "trial_days":  REFERRAL_TRIAL_DAYS  if reward_type == "trial" else 0,
     }
-    
+
 
 # ---------------------------------------------------------------------------
 # Incident helpers
@@ -727,7 +731,7 @@ def get_last_incident(monitor_id: int) -> dict | None:
     )
     row = c.fetchone()
     conn.close()
-    return dict(row) if row else None   # ← dict()
+    return dict(row) if row else None
 
 
 def get_uptime_percent(monitor_id: int, days: int = 7) -> float:
@@ -761,7 +765,7 @@ def get_incident_rows(monitor_id: int, days: int) -> list[dict]:
     )
     rows = c.fetchall()
     conn.close()
-    return [dict(r) for r in rows]   # ← dict()
+    return [dict(r) for r in rows]
 
 
 def get_expired_trials() -> list[dict]:
@@ -772,8 +776,7 @@ def get_expired_trials() -> list[dict]:
     )
     rows = c.fetchall()
     conn.close()
-    return [dict(r) for r in rows]   # ← dict()
-
+    return [dict(r) for r in rows]
 
 
 def downgrade_user(user_id: int):
@@ -794,8 +797,7 @@ def get_all_active_users() -> list[dict]:
     )
     rows = c.fetchall()
     conn.close()
-    return [dict(r) for r in rows]   # ← dict()
-
+    return [dict(r) for r in rows]
 
 
 def get_weekly_stats(monitor_id: int) -> dict:
@@ -839,7 +841,7 @@ def create_status_page(user_id: int, title: str = None) -> str:
     existing = c.fetchone()
 
     if existing:
-        existing = dict(existing)   # ← dict() before accessing .get()
+        existing = dict(existing)
         if existing["active"] == 1:
             conn.close()
             return existing["slug"]
@@ -868,7 +870,7 @@ def get_status_page_by_slug(slug: str) -> dict | None:
     c.execute("SELECT * FROM status_pages WHERE slug = ? AND active = 1", (slug,))
     row  = c.fetchone()
     conn.close()
-    return dict(row) if row else None   # ← dict()
+    return dict(row) if row else None
 
 
 def get_status_page_by_user(user_id: int) -> dict | None:
@@ -877,8 +879,7 @@ def get_status_page_by_user(user_id: int) -> dict | None:
     c.execute("SELECT * FROM status_pages WHERE user_id = ? AND active = 1", (user_id,))
     row  = c.fetchone()
     conn.close()
-    return dict(row) if row else None   # ← dict()
-
+    return dict(row) if row else None
 
 
 def delete_status_page(user_id: int):
@@ -924,6 +925,7 @@ def add_maintenance_window(
     conn.close()
     return win_id
 
+
 def get_maintenance_windows(user_id: int) -> list[dict]:
     conn = get_conn()
     c    = conn.cursor()
@@ -933,7 +935,7 @@ def get_maintenance_windows(user_id: int) -> list[dict]:
     )
     rows = c.fetchall()
     conn.close()
-    return [dict(r) for r in rows]   # ← dict()
+    return [dict(r) for r in rows]
 
 
 def count_maintenance_windows(user_id: int) -> int:

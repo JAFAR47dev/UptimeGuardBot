@@ -1,4 +1,3 @@
-### `handlers/myplan.py`
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
@@ -6,7 +5,6 @@ from db.database import get_user, get_monitors, count_monitors, get_monitor_limi
 
 
 async def myplan(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Works from both command and callback query
     if update.callback_query:
         user_id  = update.callback_query.from_user.id
         reply_fn = update.callback_query.message.reply_text
@@ -27,9 +25,9 @@ async def myplan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     plan          = (user.get("plan") or "free").lower()
     trial_expires = user.get("trial_expires")
     pro_expires   = user.get("pro_expires")
+    pro_plan_type = user.get("pro_plan_type") or "Monthly"
     bonus_slots   = user.get("bonus_monitors") or 0
 
-    # Monitor usage
     monitors_used  = count_monitors(user_id)
     monitor_limit  = get_monitor_limit(user_id)
     limit_display  = "Unlimited" if monitor_limit >= 999_999 else str(monitor_limit)
@@ -73,7 +71,6 @@ async def myplan(update: Update, context: ContextTypes.DEFAULT_TYPE):
         days_left, expiry_str = _parse_expiry(trial_expires)
 
         if days_left is not None and days_left <= 0:
-            # Trial expired but not yet downgraded by the daily job
             await reply_fn(
                 "⏰ <b>Your Trial Has Expired</b>\n\n"
                 "Your 7-day Pro trial has ended.\n"
@@ -129,7 +126,6 @@ async def myplan(update: Update, context: ContextTypes.DEFAULT_TYPE):
         days_left, expiry_str = _parse_expiry(pro_expires)
 
         if days_left is None:
-            # Pro user but no expiry stored — treat as active
             expiry_line = "📅 Access: <b>Active</b>"
         else:
             days_label  = f"{days_left} day{'s' if days_left != 1 else ''} remaining"
@@ -147,7 +143,7 @@ async def myplan(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
         await reply_fn(
-            f"⭐ <b>Your Plan: Pro</b>\n\n"
+            f"⭐ <b>Your Plan: Pro ({pro_plan_type})</b>\n\n"
             f"{expiry_line}\n\n"
             f"📡 Monitors: <b>{monitors_used} / {limit_display}</b>\n"
             f"⏱ Check interval: <b>1 minute</b>\n\n"
@@ -180,9 +176,7 @@ async def myplan(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ── Fallback ─────────────────────────────────────────────────
 
-    await reply_fn(
-        "⚠️ Could not determine your plan.\n\nContact support."
-    )
+    await reply_fn("⚠️ Could not determine your plan.\n\nContact support.")
 
 
 # ─────────────────────────────────────────
@@ -190,24 +184,13 @@ async def myplan(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ─────────────────────────────────────────
 
 def _parse_expiry(expiry_str: str | None) -> tuple[int | None, str]:
-    """
-    Parse an ISO expiry string.
-    Returns (days_left, display_string).
-    days_left is None if expiry_str is missing or unparseable.
-    """
     if not expiry_str:
         return None, "Not set"
     try:
-        if isinstance(expiry_str, str):
-            expiry_dt = datetime.fromisoformat(expiry_str)
-        else:
-            expiry_dt = expiry_str
-
-        now       = datetime.now()
-        delta     = expiry_dt - now
+        expiry_dt = datetime.fromisoformat(expiry_str) if isinstance(expiry_str, str) else expiry_str
+        delta     = expiry_dt - datetime.now()
         days_left = max(delta.days, 0)
         display   = expiry_dt.strftime("%d %b %Y")
         return days_left, display
     except Exception:
         return None, "Unknown"
-

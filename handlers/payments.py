@@ -1,4 +1,3 @@
-# handlers/payments.py
 import logging
 import calendar
 from datetime import datetime
@@ -82,7 +81,6 @@ async def pay_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = query.from_user.id
     lang    = get_user_language(user_id)
     await query.answer()
-    save_3m = PRO_MONTHLY_PRICE * 3 - PRO_3MONTH_PRICE
     await _send_invoice(
         context.bot,
         chat_id     = user_id,
@@ -166,46 +164,34 @@ def _add_months(months: int) -> str:
                     now.hour, now.minute, now.second).isoformat()
 
 
+# Maps invoice payload → (expiry ISO string, human-readable plan type)
+_PLAN_MAP = {
+    "pro_monthly": (lambda: _add_months(1),  "Monthly"),
+    "pro_3month":  (lambda: _add_months(3),  "3-Month"),
+    "pro_yearly":  (lambda: _add_months(12), "Yearly"),
+}
+
+
 async def payment_success(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     payload = update.message.successful_payment.invoice_payload
     stars   = update.message.successful_payment.total_amount
     lang    = get_user_language(user_id)
 
-    expiry_map = {
-        "pro_monthly": _add_months(1),
-        "pro_3month":  _add_months(3),
-        "pro_yearly":  _add_months(12),
-    }
-    plan_key_map = {
+    plan_entry  = _PLAN_MAP.get(payload, _PLAN_MAP["pro_monthly"])
+    expiry      = plan_entry[0]()        # call the lambda to get the ISO string
+    plan_type   = plan_entry[1]          # e.g. "Monthly", "3-Month", "Yearly"
+    plan_label  = pt_(lang, {
         "pro_monthly": "plan_label_monthly",
         "pro_3month":  "plan_label_3month",
         "pro_yearly":  "plan_label_yearly",
-    }
+    }.get(payload, "plan_label_monthly"))
 
-    expiry     = expiry_map.get(payload, _add_months(1))
-    plan_label = pt_(lang, plan_key_map.get(payload, "plan_label_monthly"))
-
-    # Upgrade user and store expiry
-    upgrade_user(user_id, "pro")
-
-    from db.database import get_conn
-    conn = get_conn()
-    c    = conn.cursor()
-    try:
-        c.execute("ALTER TABLE users ADD COLUMN pro_expires TEXT")
-        conn.commit()
-    except Exception:
-        pass
-    c.execute(
-        "UPDATE users SET pro_expires = ? WHERE user_id = ?",
-        (expiry, user_id)
-    )
-    conn.commit()
-    conn.close()
+    # Single write: plan + expiry + plan_type all at once
+    upgrade_user(user_id, "pro", pro_expires=expiry, pro_plan_type=plan_type)
 
     logger.info(
-        f"Payment success: user={user_id} plan={plan_label} "
+        f"Payment success: user={user_id} plan={plan_type} "
         f"stars={stars} expires={expiry}"
     )
 
