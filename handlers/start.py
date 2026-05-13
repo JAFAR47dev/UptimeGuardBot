@@ -1,4 +1,3 @@
-#handlers/start.py
 import logging
 from datetime import datetime
 
@@ -42,7 +41,7 @@ async def _notify_admins_new_user(bot, user, lang: str):
         return
     username_str = f"@{user.username}" if user.username else "no username"
     text = t(
-        "en",   # admin messages always in English
+        "en",
         "admin_new_user",
         full_name=user.full_name,
         username=username_str,
@@ -201,7 +200,6 @@ async def _returning_user_flow(update, context, db_user, pro: bool, monitors: li
     else:
         plan_label = t(lang, "plan_free_label")
 
-    # Slot usage line (free users only)
     slots_line = ""
     if not pro:
         limit        = get_monitor_limit(user_id)
@@ -210,14 +208,12 @@ async def _returning_user_flow(update, context, db_user, pro: bool, monitors: li
         bonus_str    = t(lang, "slots_bonus_str", bonus=bonus) if bonus else ""
         slots_line   = t(lang, "slots_line", active=active_count, limit=limit, bonus_str=bonus_str)
 
-    # Referral progress bar (free users only)
     referral_line = ""
     if not pro:
         qualified     = get_qualified_referral_count(user_id)
         bar           = _referral_progress_bar(qualified)
         referral_line = t(lang, "referral_bar", bar=bar)
 
-    # Nudge if no checks have run yet
     all_unknown = all(m["last_status"] == "unknown" for m in monitors)
     nudge_line  = t(lang, "nudge_testalert") if all_unknown else ""
 
@@ -312,10 +308,6 @@ async def referral_info_callback(update: Update, context: ContextTypes.DEFAULT_T
         ]])
     )
 
-
-# ---------------------------------------------------------------------------
-# Quick-action callbacks — pass full update so handlers detect callback_query
-# ---------------------------------------------------------------------------
 
 async def quick_status_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()

@@ -12,7 +12,7 @@ from telegram.ext import (
     MessageHandler, CallbackQueryHandler, filters
 )
 from db.database import (
-    add_monitor, get_all_monitors, delete_monitor,
+    add_monitor, mark_monitor_added, get_all_monitors, delete_monitor,
     count_monitors, is_pro, get_uptime_percent,
     pause_monitor, resume_monitor, url_exists,
     set_response_threshold, clear_response_threshold,
@@ -274,6 +274,7 @@ async def received_label(update: Update, context: ContextTypes.DEFAULT_TYPE):
         is_first = count_monitors(user_id) == 0
 
         monitor_id = add_monitor(user_id, url, label, interval)
+        mark_monitor_added(user_id) 
         schedule_monitor(context.application, monitor_id, interval)
         schedule_ssl_check(context.application, monitor_id)
 
@@ -336,6 +337,7 @@ async def skip_label(update: Update, context: ContextTypes.DEFAULT_TYPE):
         is_first = count_monitors(user_id) == 0
 
         monitor_id = add_monitor(user_id, url, url, interval)
+        mark_monitor_added(user_id) 
         schedule_monitor(context.application, monitor_id, interval)
         schedule_ssl_check(context.application, monitor_id)
 
@@ -1360,3 +1362,6 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         status_text=status_text, ago=ago))
 
     await reply_fn("\n".join(lines), parse_mode="HTML")
+    
+    
+

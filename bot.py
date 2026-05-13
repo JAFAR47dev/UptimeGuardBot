@@ -61,6 +61,7 @@ from handlers.settings import (
     language_btn_callback,
     language_set_callback,
 )
+from tasks.onboarding_reminders import register_onboarding_jobs
 
 
 logging.basicConfig(level=logging.INFO)
@@ -74,6 +75,7 @@ async def post_init(app):
     await start_web_server(app, port=STATUS_PAGE_PORT)
     app.bot_data["aiohttp_session"] = await create_shared_session()
     restore_all_monitors(app)
+    register_onboarding_jobs(app)
     # Ensure no stale webhook is registered — polling and webhooks conflict
     await app.bot.delete_webhook(drop_pending_updates=True)
     logger.info("Webhook cleared — running in polling mode")

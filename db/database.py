@@ -113,6 +113,15 @@ def init_db():
         "ALTER TABLE users ADD COLUMN language_code TEXT DEFAULT 'en'",
         "ALTER TABLE users ADD COLUMN pro_expires TEXT",
         "ALTER TABLE users ADD COLUMN pro_plan_type TEXT",
+        # ── Onboarding reminder fields ──────────────────────────────────────
+        # joined_at: when the user first started the bot (for reminder timing)
+        # has_added_monitor: set to 1 the moment they create their first monitor
+        # reminder_1_sent / _2_sent / _3_sent: prevent duplicate sends across restarts
+        "ALTER TABLE users ADD COLUMN joined_at TEXT",
+        "ALTER TABLE users ADD COLUMN has_added_monitor INTEGER DEFAULT 0",
+        "ALTER TABLE users ADD COLUMN reminder_1_sent INTEGER DEFAULT 0",
+        "ALTER TABLE users ADD COLUMN reminder_2_sent INTEGER DEFAULT 0",
+        "ALTER TABLE users ADD COLUMN reminder_3_sent INTEGER DEFAULT 0",
     ]
     for sql in migrations:
         try:
@@ -127,6 +136,7 @@ def init_db():
 # ---------------------------------------------------------------------------
 # User helpers
 # ---------------------------------------------------------------------------
+
 def get_or_create_user(user_id: int, username: str = None) -> tuple:
     conn = get_conn()
     c    = conn.cursor()
@@ -135,10 +145,13 @@ def get_or_create_user(user_id: int, username: str = None) -> tuple:
     if not user:
         from datetime import datetime, timedelta
         trial_expires = (datetime.now() + timedelta(days=7)).isoformat()
+        # Store joined_at at the moment of first /start
+        joined_at = datetime.now().isoformat()
         c.execute(
-            """INSERT INTO users (user_id, username, plan, trial_expires, bonus_monitors)
-               VALUES (?,?,?,?,?)""",
-            (user_id, username, 'trial', trial_expires, 0)
+            """INSERT INTO users
+               (user_id, username, plan, trial_expires, bonus_monitors, joined_at)
+               VALUES (?,?,?,?,?,?)""",
+            (user_id, username, 'trial', trial_expires, 0, joined_at)
         )
         conn.commit()
         c.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
@@ -234,6 +247,69 @@ def set_user_language(user_id: int, language_code: str):
     )
     conn.commit()
     conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Onboarding reminder helpers
+# ---------------------------------------------------------------------------
+
+def mark_monitor_added(user_id: int):
+    """
+    Called the first time a user successfully creates a monitor.
+    Sets has_added_monitor = 1, which permanently stops all reminder sending.
+    """
+    conn = get_conn()
+    c    = conn.cursor()
+    c.execute(
+        "UPDATE users SET has_added_monitor = 1 WHERE user_id = ?",
+        (user_id,)
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_pending_reminder_users() -> list[dict]:
+    """
+    Returns all users who:
+    - have not yet added a monitor (has_added_monitor = 0)
+    - have a joined_at timestamp (so timing can be checked)
+    - have not had all 3 reminders sent yet
+
+    The reminder task uses this to find candidates, then applies
+    per-user timing logic before actually sending.
+    """
+    conn = get_conn()
+    c    = conn.cursor()
+    c.execute(
+        """SELECT user_id, joined_at,
+                  reminder_1_sent, reminder_2_sent, reminder_3_sent
+           FROM users
+           WHERE has_added_monitor = 0
+             AND joined_at IS NOT NULL
+             AND (reminder_1_sent = 0
+                  OR reminder_2_sent = 0
+                  OR reminder_3_sent = 0)"""
+    )
+    rows = c.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def mark_reminder_sent(user_id: int, reminder_num: int):
+    """
+    Marks a specific reminder (1, 2, or 3) as sent for a user.
+    This is idempotent — safe to call even if already set.
+    """
+    col = f"reminder_{reminder_num}_sent"
+    conn = get_conn()
+    c    = conn.cursor()
+    c.execute(
+        f"UPDATE users SET {col} = 1 WHERE user_id = ?",
+        (user_id,)
+    )
+    conn.commit()
+    conn.close()
+
 
 # ---------------------------------------------------------------------------
 # Monitor helpers

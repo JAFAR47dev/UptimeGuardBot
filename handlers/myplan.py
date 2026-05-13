@@ -194,3 +194,4 @@ def _parse_expiry(expiry_str: str | None) -> tuple[int | None, str]:
         return days_left, display
     except Exception:
         return None, "Unknown"
+
